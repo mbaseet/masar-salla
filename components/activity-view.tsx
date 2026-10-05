@@ -1,0 +1,8 @@
+'use client';
+import { useEffect,useState } from 'react';
+import { History,Printer,MessageSquare } from 'lucide-react';
+import { Blank,Picker } from './controls';
+import { api,date,n,actionNames } from '@/lib/client';
+import type { Audit,Brand } from '@/lib/domain';
+export function AuditList({events}:{events:Audit[]}){return events.length===0?<Blank title="لا يوجد نشاط بعد" icon={History}/>:<div className="activity-list">{events.map(event=><div className="activity-row" key={event.id}><span className="activity-icon">{event.action.includes('print')?<Printer size={16}/>:event.action.includes('note')?<MessageSquare size={16}/>:<History size={16}/>}</span><div><strong>{actionNames[event.action]??'تحديث'}</strong><p>{event.file_name??''}</p><small>{event.actor_name}</small></div><time>{date(event.created_at,true)}</time></div>)}</div>;}
+export default function ActivityView({brands}:{brands:Brand[]}){const [events,setEvents]=useState<Audit[]>([]),[brand,setBrand]=useState('all'),[error,setError]=useState('');useEffect(()=>{void api<{events:Audit[]}>(`audit${brand==='all'?'':`?brand=${encodeURIComponent(brand)}`}`).then(d=>{setEvents(d.events);setError('');}).catch(e=>setError(e.message));},[brand]);return <div className="page-content narrow-page"><div className="page-heading"><div><div className="eyebrow">سجل الفريق</div><h1>كل إجراء، محفوظ</h1><p>الرفع والطباعة والتنقل والملاحظات، مع اسم العضو ووقت الإجراء.</p></div><Picker label="تصفية العلامة" value={brand} onChange={setBrand} options={[{value:'all',label:'كل العلامات'},...brands.map(b=>({value:b.id,label:b.name}))]}/></div>{error?<div className="error-banner">{error}</div>:<div className="settings-surface"><AuditList events={events}/></div>}</div>;}

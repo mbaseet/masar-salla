@@ -1,0 +1,17 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {detectPage,analyzePages,matchIdentifiers,parseRefList,type PageRecord} from '../lib/domain.ts';
+const brands=[{id:'wassan',identifiers:['Wasn Saudi','wasnbrand.com','وسن','اليقاظة']},{id:'other',identifiers:['Other Store']}];
+const page=(changes:Partial<PageRecord>={}):PageRecord=>({page:1,refs:['001234'],tracking:'999',quantity:1,carrier:'RedBox',sourceDate:null,dateType:null,role:'label',brands:['wassan'],matches:[],...changes});
+test('preserves leading zeroes and normalizes pasted Arabic refs',()=>assert.deepEqual(parseRefList('٠٠١٢٣٤,001234\n٥٦٧٨'),['001234','5678']));
+test('Aymakan uses Items, not Pieces, and distinguishes carrier dates',()=>{const p=detectPage('AY123456789\nRef.: 001234\nItems: 2\nPieces: 1\nDate: 29/09/2026\nFrom: Wasn Saudi\nTo: Recipient',1,brands);assert.equal(p.quantity,2);assert.equal(p.dateType,'carrier');assert.deepEqual(p.brands,['wassan']);assert.equal(p.refs[0],'001234');});
+test('recipient text cannot establish the sender brand',()=>{const p=detectPage('RedBox\nRef # 1234\nTrk # 99999\nQuantity: 1\nFrom: Unknown\nTo: Wasn Saudi',1,brands);assert.deepEqual(p.brands,[]);});
+test('newline-only sender headings stop before recipient section',()=>{const p=detectPage('RedBox\nRef # 1234\nFrom\nwasnbrand.com\nTo: Other Store',1,brands);assert.deepEqual(p.brands,['wassan']);});
+test('normalizes Arabic identifier spelling and diacritics',()=>assert.deepEqual(matchIdentifiers('الْيَقَاظَة',brands).brands,['wassan']));
+test('all pages are checked, including unknown layouts with readable Ref',()=>{const p=detectPage('New Carrier Ref: 12345',4,brands);assert.ok(analyzePages([p],'wassan').findings.some(f=>f.kind==='unreadable'&&f.page===4));});
+test('more than one Ref is unreadable',()=>assert.ok(analyzePages([page({refs:['1234','5678']})],'wassan').findings.some(f=>f.kind==='unreadable')));
+test('quantity mismatch names offending order and page',()=>{const r=analyzePages([page(),page({page:2,refs:['5678'],quantity:2})],'wassan','single');assert.equal(r.bucket,'mixed');assert.ok(r.findings.some(f=>f.kind==='bucket_mismatch'&&f.ref==='5678'&&f.page===2));});
+test('DHL support pair is one shipment; actual repeated label is a duplicate',()=>{const label=page({carrier:'DHL',quantity:null,brands:[]});const support=page({...label,page:2,role:'support'});const r=analyzePages([label,support],'wassan');assert.equal(r.waybillCount,1);assert.equal(r.bucket,'unknown');assert.equal(r.findings.filter(f=>f.kind==='duplicate_order').length,0);assert.ok(r.findings.some(f=>f.kind==='brand_unknown'));assert.ok(analyzePages([label,support,page({...label,page:3})],'wassan').findings.some(f=>f.kind==='duplicate_order'));});
+test('unmatched supporting page is flagged',()=>assert.ok(analyzePages([page({role:'support'})],'wassan').findings.some(f=>f.kind==='orphan_document')));
+test('wrong or ambiguous brand flags the exact page',()=>{for(const ids of [['other'],['other','wassan']])assert.ok(analyzePages([page({brands:ids})],'wassan').findings.some(f=>f.kind==='brand_mismatch'&&f.page===1));});
+test('unknown quantity never becomes single based on a known neighbor',()=>assert.equal(analyzePages([page(),page({page:2,refs:['5678'],quantity:null})],'wassan').bucket,'unknown'));

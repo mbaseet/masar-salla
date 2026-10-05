@@ -1,0 +1,32 @@
+import {createRequire} from 'node:module';
+import {readFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const require=createRequire(import.meta.url);
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE??'/private/tmp/salla-browser/node_modules/playwright-core');
+const browser=await chromium.launch({executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+try {
+ const page=await browser.newPage({viewport:{width:1440,height:1000},locale:'ar-SA'});const errors=[];
+ page.on('pageerror',error=>errors.push(error.message));
+ await page.goto('http://127.0.0.1:5173/signin-with-chatgpt?return_to=/',{waitUntil:'networkidle'});
+ await page.getByRole('heading',{name:'بوالص وسن'}).waitFor();
+ await page.screenshot({path:'.sites-runtime/board-desktop.png',fullPage:true});
+ assert.equal(await page.locator('html').getAttribute('dir'),'rtl');
+ await page.getByRole('button',{name:'الإعدادات',exact:true}).click();
+ await page.getByText('كلمات التعريف', {exact:false}).first().waitFor();
+ await page.screenshot({path:'.sites-runtime/settings-desktop.png',fullPage:true});
+ await page.getByRole('button',{name:'لوحات البوالص',exact:true}).click();
+ await page.getByRole('button',{name:'رفع بوالص',exact:true}).click();
+ const sample=JSON.parse(await readFile('.sites-runtime/sample-records/836.json','utf8'));
+ await page.locator('input[type=file]').setInputFiles(`../sample waybills/${sample.name}`);
+ let uploadedAt=0,finishedAt=0;page.on('response',res=>{if(res.url().endsWith('/content')&&res.status()===200)uploadedAt=performance.now();if(res.url().endsWith('/process')&&res.status()===200)finishedAt=performance.now();});
+ const resultPromise=page.waitForResponse(res=>res.url().endsWith('/process'),{timeout:180000});
+ const started=performance.now();await page.getByRole('button',{name:'رفع وفحص الملف',exact:true}).click();
+ const response=await resultPromise;assert.equal(response.status(),200);const result=await response.json();assert.equal(result.file.page_count,836);assert.equal(result.file.waybill_count,836);assert.equal(result.file.open_issues,837);
+ await page.getByRole('heading',{name:sample.name,exact:true}).waitFor();
+ await page.screenshot({path:'.sites-runtime/file-review-desktop.png',fullPage:true});
+ console.log(JSON.stringify({browserUploadPages:836,wallSeconds:Number(((performance.now()-started)/1000).toFixed(2)),afterUploadSeconds:Number(((finishedAt-uploadedAt)/1000).toFixed(2)),expectedDuplicateFindings:837}));
+ await page.keyboard.press('Escape');
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'.sites-runtime/board-mobile.png',fullPage:true});
+ const widths=await page.evaluate(()=>({viewport:innerWidth,page:document.documentElement.scrollWidth}));assert.ok(widths.page<=widths.viewport+1,`Mobile page overflow: ${JSON.stringify(widths)}`);
+ assert.deepEqual(errors,[]);console.log('Browser QA passed: RTL board, settings, real 836-page worker upload, file review, mobile width, no uncaught errors.');
+}finally{await browser.close();}
