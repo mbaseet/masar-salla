@@ -6,6 +6,7 @@ export const stageName=(stage:string,brands:Brand[],brandId:string)=>brands.find
 export const actionNames:Record<string,string>={file_deleted:'حذف ملفًا مرفوعًا بالخطأ',upload_started:'بدأ رفع الملف',uploaded:'رفع الملف',processed:'فحص الملف',downloaded:'تنزيل / فتح للطباعة',inspected:'فتح للمراجعة',printed:'أكد الطباعة',moved:'نقل الملف',note_added:'أضاف ملاحظة',issues_resolved:'عالج التنبيهات',acknowledged:'راجع التغييرات بعد الطباعة',brand_moved:'نقل إلى علامة أخرى',brand_created:'أضاف علامة',brand_updated:'حدّث إعدادات العلامة',user_updated:'حدّث عضوًا في الفريق',auto_archive:'أرشفة تلقائية',manually_confirmed:'أكد العلامة والكمية يدويًا'};
 export async function api<T=Record<string,unknown>>(path:string,options:RequestInit={}):Promise<T>{
   const res=await fetch(`/api/${path}`,{...options,headers:{...(typeof options.body==='string'?{'Content-Type':'application/json'}:{}),...options.headers}});
+  if(!res.headers.get('content-type')?.includes('application/json'))throw new Error('انتهت جلسة الدخول. أعد تحميل الصفحة لتسجيل الدخول ببريدك.');
   const data=await res.json() as T & {error?:string}; if(!res.ok)throw new Error(data.error??'تعذر إكمال العملية.');return data;
 }
 export const post=<T=Record<string,unknown>>(path:string,data:unknown)=>api<T>(path,{method:'POST',body:JSON.stringify(data)});

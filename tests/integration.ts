@@ -10,7 +10,7 @@ const paths=(await readdir('.wrangler/state/v3/d1',{recursive:true})).filter(p=>
 assert.equal(paths.length,1,'Expected exactly one local test database.');
 const database=new DatabaseSync(`.wrangler/state/v3/d1/${paths[0]}`);database.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
 database.exec('DELETE FROM findings; DELETE FROM pages; DELETE FROM occurrences; DELETE FROM notes; DELETE FROM audit; DELETE FROM order_index; DELETE FROM files; DELETE FROM brands; DELETE FROM users; DELETE FROM settings;');
-const signed=await fetch(`${origin}/signin-with-chatgpt?return_to=/`,{redirect:'manual'});
+const signed=await fetch(`${origin}/auth/login`,{redirect:'manual'});
 const cookie=signed.headers.get('set-cookie')!.split(';')[0];assert.ok(cookie);
 async function call(path:string,data?:unknown,expected=200,method=data===undefined?'GET':'POST') {
  const res=await fetch(`${origin}/api/${path}`,{method,headers:{cookie,'Content-Type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});
@@ -19,6 +19,15 @@ async function call(path:string,data?:unknown,expected=200,method=data===undefin
 let checks=0;const pass=(name:string)=>console.log(`PASS ${++checks}: ${name}`);
 const bootstrap=await call('bootstrap');assert.equal(bootstrap.user.role,'admin');assert.equal(bootstrap.brands[0].id,'wassan');
 assert.equal((await fetch(`${origin}/api/files`)).status,401);assert.equal((await fetch(`${origin}/api/files`,{headers:{'oai-authenticated-user-id':'forged','oai-authenticated-user-email':'forged@example.test'}})).status,401);pass('login and spoofed identity rejection');
+// Existing user IDs stay stable; verified-email membership is still required after login.
+for(const name of ['x-masar-dev-email','cf-access-jwt-assertion'])assert.equal((await fetch(`${origin}/api/files`,{headers:{[name]:'forged'}})).status,401);
+const memberCount=database.prepare('SELECT count(*) AS n FROM users').get()!.n;
+database.prepare('UPDATE users SET email=? WHERE id=?').run('different@example.test',bootstrap.user.id);
+await call('bootstrap',undefined,403);assert.equal(database.prepare('SELECT count(*) AS n FROM users').get()!.n,memberCount);
+database.prepare('UPDATE users SET email=?,active=0 WHERE id=?').run(bootstrap.user.email,bootstrap.user.id);
+await call('bootstrap',undefined,403);await call('files',undefined,403);
+database.prepare('UPDATE users SET active=1 WHERE id=?').run(bootstrap.user.id);
+assert.equal((await call('bootstrap')).user.id,bootstrap.user.id);pass('verified email does not bypass membership or inactive status; existing user IDs remain stable');
 const brand=bootstrap.brands[0];
 const load=async(count:number)=>JSON.parse(await readFile(`.sites-runtime/sample-records/${count}.json`,'utf8')) as {name:string;pages:PageRecord[]};
 const samples=new Map<number,{id:string;pages:PageRecord[];bytes:Buffer<ArrayBuffer>}>();

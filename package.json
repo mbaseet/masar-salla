@@ -17,11 +17,15 @@
     "typecheck": "tsc --noEmit",
     "prepare:pdf": "node scripts/prepare-pdf-assets.mjs",
     "predev": "npm run prepare:pdf",
-    "prebuild": "npm run prepare:pdf"
+    "prebuild": "npm run prepare:pdf",
+    "deploy": "node scripts/deploy-cloudflare.mjs",
+    "db:migrate": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --remote",
+    "test:worker": "node --import ./scripts/sites-env.mjs tests/worker-runtime.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
+    "@hyzyla/pdfium": "2.1.13",
     "@shadcn/react": "^0.3.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
@@ -30,6 +34,7 @@
     "drizzle-orm": "0.45.2",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
+    "jose": "^6.2.12",
     "lucide-react": "^1.31.0",
     "next": "16.3.4",
     "next-themes": "^0.4.6",
@@ -43,8 +48,7 @@
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
     "vaul": "^1.1.2",
-    "zod": "^3.25.76",
-    "@hyzyla/pdfium": "2.1.13"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",

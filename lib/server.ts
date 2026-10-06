@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { getChatGPTUser } from '@/app/chatgpt-auth';
+import { getIdentity } from './auth-context';
 import { DEFAULT_COLUMNS, analyzePages, type PageRecord, type Brand, type User, type FileCard } from './domain';
 
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -15,21 +15,15 @@ export function auditStatement(user: User, action:string, detail:unknown, brandI
   return sql('INSERT INTO audit (id,brand_id,file_id,action,actor_id,actor_name,detail,created_at) VALUES (?,?,?,?,?,?,?,?)',uid(),brandId,fileId,action,user.id,user.name,JSON.stringify(detail),now());
 }
 export async function currentUser(): Promise<User> {
-  const identity = await getChatGPTUser();
+  const identity = getIdentity();
   if(!identity) throw new HttpError(401,'سجل الدخول للمتابعة.');
   const email=identity.email.toLowerCase().trim();
-  let user=await one<User>('SELECT * FROM users WHERE id=?',identity.userId);
-  if(!user) {
-    // A new Site is owner-private. Bootstrap exactly one administrator atomically.
-    await sql('INSERT OR IGNORE INTO users (id,email,name,role,active,created_at) SELECT ?,?,?,\'admin\',1,? WHERE NOT EXISTS (SELECT 1 FROM users)',identity.userId,email,identity.displayName,now()).run();
-    user=await one<User>('SELECT * FROM users WHERE id=?',identity.userId);
-    if(!user) {
-      const invitation=await one<User>('SELECT * FROM users WHERE email=? AND active=1',email);
-      if(invitation?.id.startsWith('invite:')) {
-        await sql('UPDATE users SET id=? WHERE id=? AND email=?',identity.userId,invitation.id,email).run();
-        user=await one<User>('SELECT * FROM users WHERE id=?',identity.userId);
-      }
-    }
+  // Verified email links existing records without changing IDs referenced by audit history.
+  let user=await one<User>('SELECT * FROM users WHERE email=?',email);
+  const adminEmail=import.meta.env.DEV?'admin@masar.test':env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
+  if(!user && adminEmail && email===adminEmail) {
+    await sql("INSERT OR IGNORE INTO users (id,email,name,role,active,created_at) SELECT ?,?,?,'admin',1,? WHERE NOT EXISTS (SELECT 1 FROM users)",uid(),email,identity.name,now()).run();
+    user=await one<User>('SELECT * FROM users WHERE email=?',email);
   }
   if(!user || !user.active) throw new HttpError(403,'حسابك غير مضاف إلى الفريق. اطلب من المدير إضافتك.');
   // Seed only the known brand; never seed customer files or invented operational activity.

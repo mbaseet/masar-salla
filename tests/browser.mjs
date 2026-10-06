@@ -14,7 +14,7 @@ try{
  const allFiles=async()=>await (await page.request.get(`${origin}/api/files`)).json();
  const readyQueue=async count=>await page.waitForFunction(expected=>document.querySelectorAll('.upload-entry.entry-done').length===expected,count,{timeout:180000});
  const returnBoard=async()=>{await page.getByRole('button',{name:'العودة إلى اللوحة',exact:true}).click();await page.locator('.upload-dialog').waitFor({state:'detached'});await page.locator('.file-panel').waitFor({state:'detached'});await page.locator('.column-add').waitFor();};
- await page.goto(`${origin}/signin-with-chatgpt?return_to=/`,{waitUntil:'networkidle'});await page.getByRole('heading',{name:/بوالص وسن/}).waitFor();
+ await page.goto(`${origin}/auth/login`,{waitUntil:'networkidle'});await page.getByRole('heading',{name:/بوالص وسن/}).waitFor();
  for(const f of (await allFiles()).files.filter(f=>f.name.startsWith('UI-')||f.name==='وسن.pdf'))await page.request.delete(`${origin}/api/files/${f.id}`,{data:{confirm:true}});
  await page.reload();await page.locator('.column-add').waitFor();
  assert.equal(await page.locator('html').getAttribute('dir'),'rtl');assert.ok(await page.locator('.column-awaiting .waybill-card').count()>0);

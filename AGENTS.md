@@ -2,4 +2,4 @@ Read PROJECT_CONTEXT.md and README.md before changing this application. In the o
 
 Admin-editable brand identifiers and simple workflows are required. Operators access every brand; duplicate detection and order notes remain brand-scoped. Preserve original PDFs exactly. Never commit PDFs, raw extracted customer text, local test databases, credentials, or QA screenshots. Tests using real samples must only read the separate private sample directory.
 
-Reuse .openai/hosting.json's project_id. Keep this Site private unless the user authorizes a sharing change. Use the Sites workflow for publication and preserve the shipped migrations.
+The user authorized migration to their own Cloudflare account. The default deployment is now Cloudflare Workers through wrangler.jsonc, with Cloudflare Access email-code login, D1 and private R2. Preserve shipped migrations and reject unverified identities. The legacy .openai/hosting.json binding identifies the previous Site; do not republish or delete that Site during Cloudflare work unless specifically required for an approved cutover. Never deploy with empty Access settings.

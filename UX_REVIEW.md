@@ -17,3 +17,5 @@ Six browser scenarios passed with zero uncaught browser errors. Screenshots were
 UX changes: persistent first-column Add files, per-file progress and retry, explicit Back to board, visible Delete beside print/download with confirmation, Arabic close labels, RTL dialog alignment, and persistent amber quantity indicators separate from resolved warnings.
 
 Limits: these are local desktop Chrome and emulated-mobile checks, not physical-device or hosted load tests. The tab must remain open during processing; batches run sequentially to keep memory bounded. Older files use saved brand evidence until explicitly rechecked.
+
+Cloudflare migration follow-up: the same six browser scenarios passed with the new local email identity path. Production-runtime tests separately verify the real JWT gate, initial-admin restriction, operator membership/deactivation and native cron. The local preview exempts Vite development scripts from Worker-first asset routing; production still requires Access authentication.

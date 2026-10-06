@@ -1,6 +1,7 @@
 Implementation plan - Salla waybill tool
 
 Implementation authorized October 4, 2026. See PROJECT_CONTEXT.md for current progress.
+Cloudflare migration authorized October 6: deploy in the user’s own account with Access email-code authentication; explicitly configured initial administrator; preserve app roles and stable user IDs; dedicated D1/private R2; native 03:00 Africa/Cairo maintenance. Keep the legacy Site intact pending a deliberate data cutover. See app/CLOUDFLARE_DEPLOYMENT.md for setup and verification.
 Revision requested October 5: upload multiple PDFs in one action, retain an add-file button in occupied first columns, allow confirmed file deletion by operators/admins, accept one brand identifier anywhere in the file or filename, and keep dominant-group quantity exceptions visibly highlighted after resolution. These rules supersede conflicting original brand/filename assumptions below. Test operator scenarios and desktop/mobile UX before publishing.
 Sample evidence reviewed September 30, 2026.
 
