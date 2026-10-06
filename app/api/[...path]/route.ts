@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { env } from 'cloudflare:workers';
 import { z } from 'zod';
 import { analyzePages, DEFAULT_COLUMNS, MAX_FILE_BYTES, normalize, normalizeRef, parseRefList, type Brand, type PageRecord, type User, type FindingInput } from '@/lib/domain';
-import { currentUser,requireAdmin,checkOrigin,db,bucket,sql,rows,one,now,uid,addDays,getBrands,getFile,CARD_SELECT,hydrateFile,auditStatement,maintenance,HttpError } from '@/lib/server';
+import { currentUser,requireAdmin,checkOrigin,db,bucket,sql,rows,one,now,uid,addDays,getBrands,getFile,CARD_SELECT,hydrateFile,auditStatement,maintenance,upgradeFileChecks,HttpError } from '@/lib/server';
 
 export const dynamic='force-dynamic';
 const pageSchema=z.object({page:z.number().int().min(1).max(10000),refs:z.array(z.string().regex(/^\d{1,40}$/)).max(20),tracking:z.string().max(100).nullable(),quantity:z.number().int().min(1).max(100000).nullable(),carrier:z.enum(['Aymakan','RedBox','DHL','Unknown']),sourceDate:z.string().max(100).nullable(),dateType:z.enum(['order','carrier','label']).nullable(),role:z.enum(['label','support','unknown']),brands:z.array(z.string().max(100)).max(20),matches:z.array(z.string().max(150)).max(50)});
@@ -17,7 +17,7 @@ async function processFile(id:string,pages:PageRecord[],user:User,expectedBucket
   if(pages.some(p=>p.brands.some(id=>!ids.has(id)))) throw new HttpError(400,'تغيرت إعدادات العلامات؛ أعد فحص الملف.');
   const claim=await one<{id:string}>("UPDATE files SET status='processing',processed_at=? WHERE id=? AND (status IN ('uploaded','ready') OR (status='processing' AND processed_at<?)) RETURNING id",now(),id,new Date(Date.now()-300000).toISOString());
   if(!claim) throw new HttpError(409,'الملف قيد الفحص بالفعل. انتظر قليلًا.');
-  const result=analyzePages(pages,file.brand_id,expectedBucket);
+  const result=analyzePages(pages,file.brand_id,expectedBucket,file.name,allBrands);
   try {
     const statements=[sql('DELETE FROM pages WHERE file_id=?',id),sql('DELETE FROM occurrences WHERE file_id=?',id),sql("DELETE FROM findings WHERE (file_id=? OR related_file_id=?) AND status='open'",id,id)];
     for(let start=0;start<pages.length;start+=150) {
@@ -44,6 +44,7 @@ async function processFile(id:string,pages:PageRecord[],user:User,expectedBucket
       i.related_file_id,i.kind,i.ref,i.related_page,i.file_id,i.page,'يوجد ملف آخر يكرر هذا الطلب أو الملف.','open',? FROM findings i WHERE i.file_id=? AND i.related_file_id IS NOT NULL AND i.kind IN ('duplicate_order','duplicate_file')`,timestamp,id));
     statements.push(sql("UPDATE files SET status='ready',bucket=?,detected_brand_id=?,page_count=?,waybill_count=?,carriers=?,processed_at=?,reviewed_at=NULL WHERE id=?",result.bucket,result.detectedBrandId,result.pageCount,result.waybillCount,JSON.stringify(result.carriers),timestamp,id));
     statements.push(auditStatement(user,'processed',{pages:result.pageCount,waybills:result.waybillCount,bucket:result.bucket},file.brand_id,id));
+    statements.push(sql("INSERT OR REPLACE INTO settings (key,value) VALUES (?, '1')",`checks_v2:${id}`));
     await db().batch(statements);
     return getFile(id);
   } catch(error) { await sql("UPDATE files SET status='uploaded' WHERE id=? AND status='processing'",id).run(); throw error; }
@@ -96,6 +97,7 @@ async function handle(request:Request) {
     }
     if(path[0]==='files' && !path[1]) {
       if(method==='GET') {
+        await upgradeFileChecks();
         const brand=url.searchParams.get('brand');
         const files=await rows(`${CARD_SELECT} WHERE f.expires_at>? ${brand?'AND f.brand_id=?':''} ORDER BY f.uploaded_at DESC LIMIT 2000`,now(),...(brand?[brand]:[]));
         return json({files:files.map(f=>hydrateFile(f as Parameters<typeof hydrateFile>[0]))});
@@ -113,6 +115,22 @@ async function handle(request:Request) {
     }
     if(path[0]==='files' && path[1]) {
       const id=path[1],action=path[2];const file=await getFile(id);
+      if(!action && method==='DELETE') {
+        const input=z.object({confirm:z.literal(true)}).parse(await body(request));
+        const claimed=await one("UPDATE files SET status='deleting',expires_at=? WHERE id=? AND (status NOT IN ('receiving','processing','deleting') OR (status IN ('receiving','processing') AND processed_at<?)) RETURNING id",now(),id,new Date(Date.now()-600000).toISOString());
+        if(!claimed)throw new HttpError(409,'الملف قيد الرفع أو الفحص. انتظر اكتماله ثم احذفه.');
+        try{
+          await bucket().delete(file.object_key);
+          await db().batch([
+            sql('DELETE FROM notes WHERE file_id=?',id),sql('DELETE FROM findings WHERE related_file_id=?',id),
+            sql('DELETE FROM audit WHERE file_id=?',id),sql('DELETE FROM files WHERE id=?',id),
+            sql('DELETE FROM settings WHERE key=?',`checks_v2:${id}`),
+            sql('DELETE FROM notes WHERE brand_id=? AND ref IS NOT NULL AND NOT EXISTS (SELECT 1 FROM occurrences o JOIN files f ON f.id=o.file_id WHERE o.ref=notes.ref AND o.brand_id=notes.brand_id AND f.expires_at>?)',file.brand_id,now()),
+            auditStatement(user,'file_deleted',{name:file.name},file.brand_id),
+          ]);
+        }catch(error){await sql("UPDATE files SET status=?,expires_at=? WHERE id=? AND status='deleting'",file.status,file.expires_at,id).run();throw error;}
+        return json({ok:true});
+      }
       if(!action && method==='GET') return json({file,findings:await rows('SELECT i.*, f.name AS related_name, f.uploaded_at AS related_uploaded_at FROM findings i LEFT JOIN files f ON f.id=i.related_file_id AND f.expires_at>? WHERE i.file_id=? AND (i.related_file_id IS NULL OR f.id IS NOT NULL) ORDER BY (i.status=\'open\') DESC,i.page',now(),id),notes:await rows('SELECT * FROM notes n WHERE n.brand_id=? AND (n.file_id=? OR (n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=? AND o.ref=n.ref))) ORDER BY n.created_at DESC',file.brand_id,id,id),orders:await rows('SELECT * FROM occurrences WHERE file_id=? ORDER BY page,ref',id),audit:await rows('SELECT * FROM audit WHERE file_id=? ORDER BY created_at DESC LIMIT 100',id)});
       if(action==='content' && method==='PUT') {
         if(!request.body) throw new HttpError(400,'الملف فارغ.');
@@ -161,7 +179,8 @@ async function handle(request:Request) {
         if(file.status!=='ready')throw new HttpError(409,'أكمل فحص الملف أولًا.');
         const stored=await rows<{data:string}>('SELECT data FROM pages WHERE file_id=? ORDER BY page',id);
         const parsed=stored.map(p=>JSON.parse(p.data) as PageRecord);
-        if(new Set(parsed.flatMap(p=>p.brands)).size>1)throw new HttpError(409,'يحتوي الملف على أكثر من علامة؛ لا يمكن إصلاحه بنقل الملف كله.');
+        const verification=analyzePages(parsed,target.id,null,file.name,await getBrands());
+        if(verification.detectedBrandId!==target.id)throw new HttpError(409,'لم توجد كلمة تعريف للعلامة المطلوبة في الملف أو اسمه. راجع العلامة أولًا.');
         await db().batch([sql("UPDATE files SET brand_id=?,expires_at=?,detected_brand_id=NULL WHERE id=?",target.id,addDays(file.uploaded_at,target.retention_days),id),sql('UPDATE notes SET brand_id=? WHERE file_id=? AND ref IS NULL',target.id,id),sql('DELETE FROM findings WHERE file_id=? OR related_file_id=?',id,id),auditStatement(user,'brand_moved',{from:file.brand_id,to:target.id},target.id,id)]);
         return json({file:await processFile(id,parsed,user)});
       }
@@ -189,9 +208,9 @@ async function handle(request:Request) {
       const present=refs?new Set((await rows<{ref:string}>(`SELECT wanted.value AS ref FROM json_each(?) wanted WHERE EXISTS (SELECT 1 FROM occurrences o JOIN files f ON f.id=o.file_id WHERE o.ref=wanted.value AND f.expires_at>?) OR EXISTS (SELECT 1 FROM order_index h WHERE h.ref=wanted.value AND h.expires_at>?)`,JSON.stringify(refs),now(),now())).map(r=>r.ref)):new Set<string>();
       return json({results:results.slice(0,2000),missing:refs?.filter(ref=>!present.has(ref))??[],truncated:results.length>2000});
     }
-    if(path[0]==='audit' && method==='GET') {const brand=url.searchParams.get('brand');return json({events:await rows(`SELECT a.*,f.name AS file_name FROM audit a LEFT JOIN files f ON f.id=a.file_id WHERE ${brand?'a.brand_id=? AND ':''}(a.file_id IS NULL OR f.expires_at>?) ORDER BY a.created_at DESC LIMIT 300`,...(brand?[brand]:[]),now())});}
+    if(path[0]==='audit' && method==='GET') {const brand=url.searchParams.get('brand');return json({events:await rows(`SELECT a.*,COALESCE(f.name,CASE WHEN a.action='file_deleted' THEN json_extract(a.detail,'$.name') END) AS file_name FROM audit a LEFT JOIN files f ON f.id=a.file_id WHERE ${brand?'a.brand_id=? AND ':''}(a.file_id IS NULL OR f.expires_at>?) ORDER BY a.created_at DESC LIMIT 300`,...(brand?[brand]:[]),now())});}
     if(path[0]==='maintenance' && method==='POST') {requireAdmin(user);return json(await maintenance(true));}
     throw new HttpError(404,'الطلب غير موجود.');
   }catch(error){if(error instanceof HttpError)return json({error:error.message},error.status);if(error instanceof z.ZodError)return json({error:'راجع الحقول المدخلة ثم حاول مرة أخرى.',fields:error.issues.map(i=>i.path.join('.'))},400);console.error('Waybill API request failed',error instanceof Error?error.message:'Unknown error');return json({error:'تعذر إكمال العملية الآن. بياناتك المدخلة لم تُحذف؛ حاول مرة أخرى.'},500);}
 }
-export const GET=handle;export const POST=handle;export const PUT=handle;
+export const GET=handle;export const POST=handle;export const PUT=handle;export const DELETE=handle;

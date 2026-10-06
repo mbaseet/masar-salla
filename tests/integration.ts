@@ -1,9 +1,9 @@
 // Destructive only to the local test database. Never runs against a hosted Site.
 import assert from 'node:assert/strict';
-import {readFile,readdir} from 'node:fs/promises';
+import {readFile,readdir,writeFile} from 'node:fs/promises';
 import {DatabaseSync} from 'node:sqlite';
 import {createHash,randomUUID} from 'node:crypto';
-import {DEFAULT_COLUMNS,MAX_FILE_BYTES,type PageRecord} from '../lib/domain.ts';
+import {DEFAULT_COLUMNS,MAX_FILE_BYTES,quantityExceptions,type PageRecord} from '../lib/domain.ts';
 const origin=process.env.TEST_ORIGIN??'http://127.0.0.1:5173';
 assert.equal(new URL(origin).hostname,'127.0.0.1','Only the loopback QA server is permitted.');
 const paths=(await readdir('.wrangler/state/v3/d1',{recursive:true})).filter(p=>p.endsWith('.sqlite')&&!p.endsWith('/metadata.sqlite'));
@@ -30,7 +30,7 @@ async function upload(pages:PageRecord[],bytes=Buffer.from(`%PDF-1.7\n% syntheti
 }
 for(const count of [226,26,836,85,6]){
  const {name,pages}=await load(count),bytes=await readFile(`../sample waybills/${name}`);const result=await upload(pages,bytes,'wassan',name);samples.set(count,{id:result.id,pages,bytes});
- assert.equal(result.file.page_count,count);assert.equal(result.file.waybill_count,count===6?3:count);assert.equal(result.file.open_issues,count===6?6:0);
+ assert.equal(result.file.page_count,count);assert.equal(result.file.waybill_count,count===6?3:count);assert.equal(result.file.open_issues,count===6?3:0);
  const downloaded=await fetch(`${origin}/api/files/${result.id}/download`,{headers:{cookie}});assert.equal(downloaded.status,200);assert.equal(createHash('sha256').update(Buffer.from(await downloaded.arrayBuffer())).digest('hex'),createHash('sha256').update(bytes).digest('hex'));
  pass(`${count}-page original upload, correct findings/counts, unchanged download; processing ${result.seconds.toFixed(2)}s`);
 }
@@ -69,4 +69,18 @@ database.prepare("UPDATE users SET role='operator' WHERE id=?").run(bootstrap.us
 assert.equal((await fetch(`${origin}/api/maintenance/run`,{method:'POST'})).status,401);pass('unattended cleanup endpoint rejects missing service credential');
 await call(`brands/${other.id}`,{...other,index_days:0});assert.equal(database.prepare('SELECT count(*) AS n FROM order_index WHERE brand_id=?').get(other.id)!.n,0);pass('turning off the historical index deletes existing index entries');
 const retryId=randomUUID(),retryBytes=Buffer.from('%PDF-1.7\n% retry fixture\n%%EOF');await call('files',{id:retryId,brandId:'wassan',name:'retry.pdf',size:retryBytes.length},201);database.prepare("UPDATE files SET status='receiving',processed_at=? WHERE id=?").run(new Date(Date.now()-11*60000).toISOString(),retryId);const retried=await fetch(`${origin}/api/files/${retryId}/content`,{method:'PUT',headers:{cookie},body:retryBytes});assert.equal(retried.status,200);database.prepare("UPDATE files SET status='processing',processed_at=? WHERE id=?").run(new Date(Date.now()-6*60000).toISOString(),retryId);await call(`files/${retryId}/process`,{pages:[{...baseline,refs:['800000888']}]});pass('interrupted upload and processing can recover after stale leases');
+const minorityPages=[{...baseline,refs:['810000001']},{...baseline,page:2,refs:['810000002']},{...baseline,page:3,refs:['810000003'],quantity:4}];
+const minority=await upload(minorityPages,undefined,'wassan','وسن - كميات مختلفة.pdf');detail=await call(`files/${minority.id}`);assert.equal(detail.file.quantity_attention,1);assert.equal(detail.findings.length,1);assert.equal(detail.findings[0].ref,'810000003');assert.ok(detail.findings[0].message.includes('4'));
+await call('findings',{ids:detail.findings.map((i:any)=>i.id),status:'confirmed_error',note:'QA: handled but preserve quantity highlight'});detail=await call(`files/${minority.id}`);assert.equal(detail.file.open_issues,0);assert.equal(detail.file.quantity_attention,1);assert.deepEqual(quantityExceptions(detail.orders).exceptions.map(p=>p.quantity),[4]);await call(`files/${minority.id}/printed`,{});pass('minority 2+ quantity stays highlighted with Ref and page after resolution and printing');
+const fileOnly=await upload([{...baseline,refs:['810000010'],brands:[]},{...baseline,page:2,refs:['810000011'],brands:[]}],undefined,'wassan','وسن.pdf');assert.equal(fileOnly.file.open_issues,0);assert.equal(fileOnly.file.detected_brand_id,'wassan');pass('filename-only brand match verifies every page');
+const oneMatch=await upload([{...baseline,refs:['810000012'],brands:[]},{...baseline,page:2,refs:['810000013']}]);assert.equal(oneMatch.file.open_issues,0);pass('one matching page verifies the whole PDF');
+database.prepare('DELETE FROM settings WHERE key=?').run(`checks_v2:${fileOnly.id}`);database.prepare("INSERT INTO findings (id,fingerprint,file_id,kind,ref,page,message,status,created_at) VALUES (?,?,?,'brand_unknown',NULL,1,'Legacy page brand warning','open',?)").run('legacy-brand','legacy-brand',fileOnly.id,new Date().toISOString());detail=await call(`files/${fileOnly.id}`);assert.equal(detail.file.open_issues,0);assert.equal(detail.findings.length,0);pass('existing per-page brand warnings upgrade to the file-level rule');
+const sharedPage={...baseline,refs:['810000500']};const deleteOne=await upload([sharedPage],undefined,'wassan','QA-delete-one.pdf'),deleteTwo=await upload([sharedPage],undefined,'wassan','QA-delete-two.pdf');
+await call(`files/${deleteOne.id}/notes`,{ref:sharedPage.refs[0],type:'other',body:'Shared order note survives on another file'});
+await call(`files/${deleteOne.id}`,{confirm:false},400,'DELETE');assert.equal((await fetch(`${origin}/api/files/${deleteOne.id}`,{method:'DELETE',body:JSON.stringify({confirm:true})})).status,401);
+database.prepare("UPDATE users SET role='operator' WHERE id=?").run(bootstrap.user.id);await call(`files/${deleteOne.id}`,{confirm:true},200,'DELETE');await call(`files/${deleteOne.id}`,undefined,404);assert.equal((await fetch(`${origin}/api/files/${deleteOne.id}/download`,{headers:{cookie}})).status,404);
+detail=await call(`files/${deleteTwo.id}`);assert.equal(detail.file.open_issues,0);assert.equal(detail.notes.length,1);search=await call(`search?q=${sharedPage.refs[0]}`);assert.equal(search.results.length,1);assert.equal(search.results[0].file_id,deleteTwo.id);pass('operator deletion removes PDF access/search/duplicate mirrors while preserving shared order notes');
+await call(`files/${deleteTwo.id}`,{confirm:true},200,'DELETE');assert.equal(database.prepare('SELECT count(*) AS n FROM notes WHERE ref=?').get(sharedPage.refs[0])!.n,0);const deletionAudit=(await call('audit')).events.filter((a:any)=>a.action==='file_deleted');assert.equal(deletionAudit.length,2);assert.ok(deletionAudit.every((a:any)=>a.file_name&&a.actor_name));database.prepare("UPDATE users SET role='admin' WHERE id=?").run(bootstrap.user.id);pass('last-copy deletion removes orphan notes and keeps named actor audit records');
+const interrupted=randomUUID();await call('files',{id:interrupted,brandId:'wassan',name:'interrupted.pdf',size:100},201);await call(`files/${interrupted}`,{confirm:true},200,'DELETE');pass('an incomplete mistaken upload can be deleted');
+await writeFile('.sites-runtime/scenarios.json',JSON.stringify({minorityId:minority.id,fileOnlyId:fileOnly.id}));
 database.close();console.log(`Integration complete: ${checks} checks passed.`);

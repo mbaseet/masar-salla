@@ -7,7 +7,7 @@ export type User = { id: string; email: string; name: string; role: Role; active
 export type PageRecord = { page: number; refs: string[]; tracking: string | null; quantity: number | null; carrier: 'Aymakan' | 'RedBox' | 'DHL' | 'Unknown'; sourceDate: string | null; dateType: 'order' | 'label' | 'carrier' | null; role: 'label' | 'support' | 'unknown'; brands: string[]; matches: string[] };
 export type FindingInput = { kind: string; page: number | null; ref: string | null; message: string; relatedFileId?: string; relatedPage?: number };
 export type Finding = FindingInput & { id: string; file_id: string; status: string; resolution_note: string | null; related_file_id: string | null; related_page: number | null; related_name?: string; related_uploaded_at?: string; created_at: string; resolved_at?: string };
-export type FileCard = { id: string; brand_id: string; name: string; size: number; hash: string | null; status: string; stage: string; bucket: Bucket; detected_brand_id: string | null; page_count: number; waybill_count: number; carriers: string[]; uploaded_at: string; expires_at: string; printed_at: string | null; shipped_at: string | null; changed_version: number; ack_version: number; open_issues: number; note_count: number; attention_orders: number; reviewed_at: string | null };
+export type FileCard = { id: string; brand_id: string; name: string; size: number; hash: string | null; status: string; stage: string; bucket: Bucket; detected_brand_id: string | null; page_count: number; waybill_count: number; carriers: string[]; uploaded_at: string; expires_at: string; printed_at: string | null; shipped_at: string | null; changed_version: number; ack_version: number; open_issues: number; note_count: number; attention_orders: number; quantity_attention: number; reviewed_at: string | null };
 export type Note = { id: string; ref: string | null; type: string; body: string; actor_name: string; created_at: string };
 export type Audit = { id: string; action: string; actor_name: string; detail: string; created_at: string; file_id: string | null; file_name?: string };
 export type Occurrence = { file_id: string; brand_id: string; page: number; ref: string; tracking: string | null; quantity: number | null; carrier: string; source_date: string | null; date_type: string | null; page_role: string; name?: string; stage?: string; uploaded_at?: string; brand_name?: string; historical?: boolean };
@@ -47,29 +47,41 @@ export function detectPage(raw: string, page: number, brands: Pick<Brand, 'id' |
   const quantity = quantityMatch && Number(quantityMatch[1]) > 0 ? Number(quantityMatch[1]) : null;
   const trackingMatch = carrier === 'RedBox' ? /\bTrk\s*#\s*(\d+)/i.exec(text) : carrier === 'Aymakan' ? /\b(AY\d{8,})\b/.exec(text) : /\bWAYBILL[ \t]+([0-9][0-9 ]+)/.exec(text);
   const date = carrier === 'RedBox' ? /Order date:[ \t]*([^\r\n]+)/i.exec(text)?.[1] : carrier === 'Aymakan' ? /Date:[ \t]*(\d{2}\/\d{2}\/\d{4})/.exec(text)?.[1] : /\b(\d{4}-\d{2}-\d{2})\b/.exec(text)?.[1];
-  // Limit brand recognition to sender/product areas: a recipient's name/address is not brand evidence.
-  const sender = /\b(?:From|Shipper)(?:[ \t]*:|[ \t]*\r?\n)([\s\S]*?)(?:\b(?:To|Receiver)(?:[ \t]*:|[ \t]*\r?\n)|$)/i.exec(text)?.[1] ?? '';
-  const description = /Description\s*:?\s*([^\r\n]+)/i.exec(text)?.[1] ?? '';
-  const found = matchIdentifiers(`${sender}\n${description}`, brands);
+  // User policy: one identifier anywhere in the document is enough. Persist matches, never raw text.
+  const found = matchIdentifiers(text, brands);
   return { page, refs, tracking: trackingMatch?.[1].replace(/\s/g, '') ?? null, quantity, carrier, sourceDate: date?.trim().slice(0, 100) ?? null, dateType: date ? carrier === 'RedBox' ? 'order' : carrier === 'DHL' ? 'label' : 'carrier' : null, role: carrier === 'Unknown' ? 'unknown' : /\*WAYBILL DOC\*/.test(text) ? 'support' : 'label', ...found };
 }
-export function analyzePages(pages: PageRecord[], brandId: string, expectedBucket?: Bucket | null) {
+export function quantityExceptions(records: Array<{page:number;quantity:number|null;role?:string;page_role?:string}>) {
+  const labels=records.filter(p=>(p.role??p.page_role)==='label'&&p.quantity!==null);
+  const singles=labels.filter(p=>p.quantity===1).length,multiples=labels.filter(p=>p.quantity!>=2).length;
+  const mixed=singles>0&&multiples>0;
+  const dominant=singles===multiples?null:singles>multiples?'single':'multiple';
+  const exceptions=mixed?labels.filter(p=>dominant===null||(dominant==='single'?p.quantity!>=2:p.quantity===1)):[];
+  return {mixed,dominant,singles,multiples,exceptions,pages:new Set(exceptions.map(p=>p.page))};
+}
+export function checkFileBrand(pages:Pick<PageRecord,'brands'>[],brandId:string,fileName='',brands:Pick<Brand,'id'|'identifiers'>[]=[]){
+  const ids=[...new Set([...pages.flatMap(p=>p.brands),...matchIdentifiers(fileName.replace(/\.pdf$/i,''),brands).brands])];
+  const accepted=ids.includes(brandId);
+  const detectedBrandId=accepted?brandId:ids.length===1?ids[0]:null;
+  const finding:FindingInput|null=accepted?null:{kind:ids.length?'brand_mismatch':'brand_unknown',page:null,ref:null,message:ids.length===0?'لم توجد كلمة تعريف للعلامة في الملف أو اسمه. أكد العلامة بعد المراجعة.':ids.length===1?'الملف أو اسمه يطابق علامة أخرى غير اللوحة الحالية.':'الملف يطابق علامات أخرى؛ راجع العلامة المناسبة.'};
+  return {detectedBrandId,finding,brandIds:ids};
+}
+export function analyzePages(pages: PageRecord[], brandId: string, expectedBucket?: Bucket | null, fileName='', brands:Pick<Brand,'id'|'identifiers'>[]=[]) {
   const findings: FindingInput[] = [];
   const labels = pages.filter(p => p.role === 'label');
   const quantities = labels.map(p => p.quantity);
   const known = quantities.filter((q): q is number => q !== null);
   const hasSingle = known.some(q => q === 1), hasMultiple = known.some(q => q >= 2);
   const bucket: Bucket = hasSingle && hasMultiple ? 'mixed' : quantities.length === 0 || known.length !== quantities.length ? 'unknown' : hasSingle ? 'single' : 'multiple';
-  const brandIds = [...new Set(pages.flatMap(p => p.brands))];
-  const detectedBrandId = brandIds.length === 1 ? brandIds[0] : null;
+  const {brandIds,detectedBrandId,finding:brandFinding}=checkFileBrand(pages,brandId,fileName,brands);
+  if(brandFinding)findings.push(brandFinding);
+  const exceptions=quantityExceptions(pages);
   for (const p of pages) {
     const ref = p.refs.length === 1 ? p.refs[0] : null;
     if (p.carrier === 'Unknown' || p.refs.length !== 1) findings.push({ kind: 'unreadable', page: p.page, ref, message: p.carrier === 'Unknown' ? 'تصميم شركة الشحن غير معروف؛ تحتاج الصفحة إلى مراجعة.' : p.refs.length === 0 ? 'لم يتم العثور على رقم الطلب.' : `تحتوي الصفحة على أكثر من رقم طلب: ${p.refs.join('، ')}` });
     if (!p.tracking) findings.push({ kind: 'tracking_unknown', page: p.page, ref, message: 'لم يتم العثور على رقم تتبع واضح.' });
     if (p.role === 'label' && p.quantity === null) findings.push({ kind: 'quantity_unknown', page: p.page, ref, message: 'عدد المنتجات غير موجود؛ عدد الطرود لا يحدد كمية الطلب.' });
-    if (p.role === 'label' && p.brands.length === 0) findings.push({ kind: 'brand_unknown', page: p.page, ref, message: 'لم تُطابق الصفحة كلمات التعريف لأي علامة. أكد العلامة بعد المراجعة.' });
-    if (p.brands.length > 1 || (p.brands.length === 1 && p.brands[0] !== brandId)) findings.push({ kind: 'brand_mismatch', page: p.page, ref, message: p.brands.length > 1 ? 'تطابق الصفحة أكثر من علامة؛ راجع كلمات التعريف.' : 'تطابق الصفحة علامة أخرى غير اللوحة الحالية.' });
-    if (p.role === 'label' && p.quantity !== null && (bucket === 'mixed' || (expectedBucket === 'single' && p.quantity !== 1) || (expectedBucket === 'multiple' && p.quantity < 2))) findings.push({ kind: 'bucket_mismatch', page: p.page, ref, message: `كمية الطلب ${p.quantity}؛ الملف لا يطابق مجموعة كمية واحدة.` });
+    if (p.role === 'label' && p.quantity !== null && (expectedBucket==='single'?p.quantity!==1:expectedBucket==='multiple'?p.quantity<2:exceptions.pages.has(p.page))) findings.push({ kind: 'bucket_mismatch', page: p.page, ref, message: `كمية الطلب ${p.quantity}؛ تختلف عن مجموعة الكمية ${expectedBucket==='single'||(!expectedBucket&&exceptions.dominant==='single')?'حبة واحدة':expectedBucket==='multiple'||exceptions.dominant==='multiple'?'حبتان أو أكثر':'المختلطة'}.` });
     if (p.role === 'support' && !labels.some(l => l.refs.length === 1 && l.refs[0] === ref && l.tracking === p.tracking && l.carrier === p.carrier)) findings.push({ kind: 'orphan_document', page: p.page, ref, message: 'مستند مرافق بدون ملصق شحن مطابق في هذا الملف.' });
   }
   const byRef = new Map<string, PageRecord[]>();

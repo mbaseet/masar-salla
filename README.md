@@ -6,9 +6,15 @@ An Arabic RTL internal application for a small operations team. One card represe
 
 1. Open the private Site and sign in. The first owner login becomes the administrator.
 2. In **الإعدادات → العلامات والتعريف**, edit Wassan's identifiers or add other brands. Put each sender name, product name, or domain on its own line.
-3. Upload a PDF on its brand board. Keep the tab open until processing finishes. Review warnings and use the offered move if the file belongs to another brand.
+3. Select or drop one or more PDFs on the brand board. Each file gets its own card, with progress and retry controls. **إضافة ملفات** stays visible in the first column. Keep the tab open until the queue finishes. Review warnings and use the offered move if a file belongs to another brand.
 4. Open/download the unchanged original, print, then explicitly confirm printing. New notes after printing raise an alert until acknowledged.
 5. Add team emails and roles under **أعضاء الفريق**, and grant those people access through Site sharing. App membership alone does not change Site sharing.
+
+One configured brand identifier anywhere in the PDF or filename verifies the entire file. Files without a matching identifier still need review. Existing cards upgrade using their saved evidence; use **إعادة الفحص** if an older card needs the new full-text check.
+
+Mixed single-item/2+ files show the minority orders with their Ref, page and actual quantity. Equal groups highlight both. These highlights stay on the card, in file review and on the attention sheet even after the warnings are resolved.
+
+For a mistaken upload, open its card and choose **حذف الملف**, then confirm. Admins and operators can delete. This removes the original, search occurrences and associated duplicate alerts; order notes shared with another retained file remain there. The deletion is recorded in activity.
 
 ## Architecture
 
