@@ -26,6 +26,8 @@ Defaults: 50 MiB maximum; 30 days from upload, archived or not; optional 90-day 
 
 ## Local development
 
+The source repository is [mbaseet/masar-salla](https://github.com/mbaseet/masar-salla). Its root corresponds to the original workspace's `app/` directory. Clone it with `git clone https://github.com/mbaseet/masar-salla.git`, then `cd masar-salla`. The implementation plan and project context are included; private sample waybills are intentionally excluded.
+
 Use Node 22.13+ (24 recommended), `npm ci`, and `npm run build`. Generate schema changes with `npm run db:generate`; never rewrite a deployed migration. Initialize local D1:
 
 ```sh

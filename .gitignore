@@ -46,3 +46,9 @@ next-env.d.ts
 /work/
 /.dev.vars*
 /public/pdf/
+
+# Private customer documents and local generated state
+*.pdf
+*.sqlite*
+*.db
+*.tsbuildinfo

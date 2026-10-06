@@ -1,17 +1,17 @@
 Project context — Salla Orders / مسار
 
-Last updated: 2026-10-06, revision verified; publication in progress.
+Last updated: 2026-10-06, GitHub source publication.
 
 Current outcome
-- Revision implementation is in app/ (not yet published): multi-file queue with per-file progress/retry, visible first-column add button, explicit back-to-board action, confirmed file deletion for both roles, file/filename brand matching, persistent quantity exception summary/table/card/attention-sheet highlighting. Legacy brand warnings upgrade using saved evidence.
-- Revised typecheck and 17 parser tests pass. All five original sample PDFs pass: domestic zero findings; DHL now has three quantity-only findings because its filename identifies Wassan. All 31 local integration checks and six browser UX scenarios pass. Desktop/mobile screenshots inspected; zero uncaught browser errors. Production build/publication next.
+- Revision is published from app/: multi-file queue with per-file progress/retry, visible first-column add button, explicit back-to-board action, confirmed file deletion for both roles, file/filename brand matching, persistent quantity exception summary/table/card/attention-sheet highlighting. Legacy brand warnings upgrade using saved evidence.
+- Revised typecheck and 17 parser tests pass. All five original sample PDFs pass: domestic zero findings; DHL now has three quantity-only findings because its filename identifies Wassan. All 31 local integration checks and six browser UX scenarios pass. Desktop/mobile screenshots inspected; zero uncaught browser errors. Production build passed and private publication succeeded.
 - Verified revision scope: batch PDF selection/drop, persistent add-file control in Awaiting print, confirmed deletion of mistaken uploads, file-wide brand matching including filename, and quantity exceptions highlighted even after resolution. Browser UX/scenario testing is complete. Existing private audience and nightly schedule must be preserved.
 - New brand rule supersedes the original sender-only/per-page policy: one occurrence for the selected brand anywhere in the PDF or filename is sufficient. Quantity exceptions will be based on the dominant single vs 2+ group (ties highlight both groups), with Ref/page/actual quantity retained independently of warning resolution.
 - Phase 1 implementation is published privately: https://salla-waybill-operations.youssef5537rblh.chatgpt.site
 - Site ID: appgprj_6ac228daf7c48191a7d214780d594c14. Reuse app/.openai/hosting.json; never register a replacement.
-- Deployed source: b223b785e2130d67d22cdfc37f82eb13d7c5faba.
-- Deployment: appgdep_6ac37f4144ac819181964d76639e2b7a, succeeded. Environment revision 1.
-- Version: appgprj_6ac228daf7c48191a7d214780d594c14~appgver_709d8b244bd88191b17fbd493fe8fa68.
+- Deployed source: 0b3c04ab76adbbae54b603fad7d4ed6b3c7f8b60.
+- Deployment: appgdep_6ac4c54fa25881918816687556ebe846, succeeded. Environment revision 1.
+- Version: appgprj_6ac228daf7c48191a7d214780d594c14~appgver_b7b05f66b5b88191a66fe230a56de2aa.
 - Private audience unchanged, owner only. No customer PDFs or local test records were uploaded to production.
 - Nightly cleanup/auto-archive schedule saved and enabled at 03:00 Africa/Cairo, starting October 6. ID: Automation_752ab481a7108191b0479eda116e1fbb. The first scheduled run has not been independently observed.
 - Hosted POST /api/maintenance/run was verified with service authentication: HTTP 200, zero expired/archived records. Never record credentials here.
@@ -48,7 +48,14 @@ Verified evidence
 - Local integration suite passes 31 checks: all five real uploads and byte-identical downloads, duplicate hash/Refs and mirrors, within-file repetition, resolution persistence, two-order repeat report, unknown layout, mixed bucket, brand settings/move/isolation, simultaneous uploads, late notes/acknowledgment races, search, roles, expiry/index/archiving, interrupted-operation recovery, file-level brand migration, filename-only matching, permanent quantity highlights, and deletion/access/search/duplicate/note cleanup.
 - Chrome QA passed RTL board/settings/review, real 836-page worker upload, mobile width, and no uncaught browser errors. 836-page local parse: 4.44 seconds. Browser upload-to-result: 13.8 seconds total, 7.22 seconds after upload completion. These are local measurements, not a hosted performance guarantee.
 - Revised Chrome UX: batch-select real 226/26-page PDFs in an occupied first column; drop several files; damaged-file continuation; retry without duplicate cards; minority quantity highlight after resolution/printing/reopening/reload and attention-sheet inclusion; late-note acknowledgment; delete cancel/confirm; filename-only matching; 390×844 mobile layout and Escape dismissal. Six scenarios passed, no uncaught browser errors. Dialog animation waits were corrected in the test harness.
-- Source audit: zero PDFs, local SQLite databases, or QA screenshots tracked. Revised deployment archive verification pending packaging.
+- Source audit: zero PDFs, local SQLite databases, or QA screenshots tracked. Revised 200-entry deployment archive verified: no customer PDFs, local databases, QA state or environment files.
+
+GitHub source
+- User-selected repository: https://github.com/mbaseet/masar-salla. It is public; preserve its existing visibility.
+- The app checkout uses the additional remote github and branch main. GitHub repository root corresponds to the original workspace app/ directory. Preserve the Sites project binding and source workflow.
+- IMPLEMENTATION_PLAN.md is copied into the application repository for GitHub continuity; the original workspace root remains canonical for planning and context. Keep these copies synchronized on future changes.
+- Both existing source commits were inspected before pushing: no customer PDFs, local databases, extracted QA data, environment files, or detected credential patterns. Ignore rules explicitly exclude PDFs, SQLite databases and TypeScript build caches.
+- GitHub pushes store source only; production publication and its private audience remain managed through the existing Sites workflow.
 
 Local tooling and continuity
 - app/README.md documents setup and first use; app/AGENTS.md documents app-specific rules.
@@ -56,11 +63,11 @@ Local tooling and continuity
 - Use npm run typecheck, npm test, npm run test:samples. Integration tests require the local server and deliberately reset only local QA storage. Browser tests use temporary Playwright tooling; no production test records are needed.
 - Generated initial migration: app/drizzle/0000_closed_lethal_legion.sql. It is deployed; never rewrite it.
 - Root PROJECT_CONTEXT.md is canonical. app/PROJECT_CONTEXT.md is a synchronized local copy; its post-publication documentation update does not change the deployed app behavior.
-- Local preview and ignored QA storage are active during this revision’s verification. Stop the server and remove test storage/extracted records/screenshots after publication; preserve original samples.
+- Local preview server stopped after publication. Local QA database/object storage, extracted sample records and screenshots removed; original sample PDFs preserved. UX evidence and reproducible scenarios are documented in app/UX_REVIEW.md and app/tests/.
 
 Limits and next steps
 - Hosting discussion (2026-10-05): user asked about the stack and free independent/private hosting. No migration requested or performed. Closest fit is an own-account Cloudflare deployment, but its free 10 ms CPU/request allowance needs benchmarking; the paid Workers base is $5/month. Oracle Always Free VM or existing office hardware are alternatives requiring more backend adaptation. Moving off Sites requires replacing platform login and the linked scheduler; moving off Cloudflare also requires D1/R2 adapters. Provider pricing was checked against official docs on this date.
-- Pilot with Wassan: open private link, sign in as owner/admin, review Settings → brand identifiers, then upload a daily file.
+- Next pilot step: refresh the private app, select multiple daily files on Wassan’s board, and review quantity exceptions. Existing cards upgrade from saved brand evidence; use Recheck if an older card requires the new anywhere-in-file match.
 - Add other brands and their identifiers in settings. Real samples for those brands are still needed to validate their layouts; synthetic wrong-brand behavior already passes.
 - Scanned PDFs have no OCR; unknown/unreadable pages are flagged for operator review.
 - Hosted/concurrent performance and a near-50 MiB real-world browser file have not been benchmarked. Optional WebMCP search registration has no supported-session verification yet.
