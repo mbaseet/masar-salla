@@ -52,6 +52,7 @@ Verified evidence
 
 GitHub source
 - User-selected repository: https://github.com/mbaseet/masar-salla. It is public; preserve its existing visibility.
+- Initial push succeeded. GitHub API confirmed commit 1e9a79fddb899b7b6ffb0fa36777ac615e63240f matches local source and main is the default branch. This verification is recorded in the following documentation commit. No application behavior or live deployment changed during this task.
 - The app checkout uses the additional remote github and branch main. GitHub repository root corresponds to the original workspace app/ directory. Preserve the Sites project binding and source workflow.
 - IMPLEMENTATION_PLAN.md is copied into the application repository for GitHub continuity; the original workspace root remains canonical for planning and context. Keep these copies synchronized on future changes.
 - Both existing source commits were inspected before pushing: no customer PDFs, local databases, extracted QA data, environment files, or detected credential patterns. Ignore rules explicitly exclude PDFs, SQLite databases and TypeScript build caches.
