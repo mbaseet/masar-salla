@@ -13,6 +13,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:printing": "node scripts/prepare-pdf-assets.mjs && node --experimental-transform-types tests/printing.mjs",
     "test:samples": "node --experimental-strip-types tests/samples.ts",
     "typecheck": "tsc --noEmit",
     "prepare:pdf": "node scripts/prepare-pdf-assets.mjs",

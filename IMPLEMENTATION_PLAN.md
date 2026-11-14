@@ -3,6 +3,8 @@ Implementation plan - Salla waybill tool
 Implementation authorized October 4, 2026. See PROJECT_CONTEXT.md for current progress.
 Cloudflare migration authorized October 6: deploy in the user’s own account with Access email-code authentication; explicitly configured initial administrator; preserve app roles and stable user IDs; dedicated D1/private R2; native 03:00 Africa/Cairo maintenance. Keep the legacy Site intact pending a deliberate data cutover. See app/CLOUDFLARE_DEPLOYMENT.md for setup and verification.
 Revision requested October 5: upload multiple PDFs in one action, retain an add-file button in occupied first columns, allow confirmed file deletion by operators/admins, accept one brand identifier anywhere in the file or filename, and keep dominant-group quantity exceptions visibly highlighted after resolution. These rules supersede conflicting original brand/filename assumptions below. Test operator scenarios and desktop/mobile UX before publishing.
+November 11 revision implemented locally: ship individual orders before the batch, optionally exclude individual pages, and generate filtered operational print copies. Keep original PDFs intact and available through audited admin export. Reserve the shipment before issuing a separate label, exclude matching retained copies and linked support pages, and confirm dispatch independently of file stage. Hold changed tracking for review, record prior batch issuance, and require reconciliation when a previously issued copy contained the label. Apply migration 0001 before publishing.
+
 Sample evidence reviewed September 30, 2026.
 
 The user chose a standalone internal tool and asked to simplify the workflow for a small team. Operators can access every brand. Brand records and duplicate checks remain separate even though the same people can access all brands.
@@ -10,7 +12,7 @@ The user chose a standalone internal tool and asked to simplify the workflow for
 The user accepted the following defaults on October 4, 2026 and requested admin-editable brand identifier words in settings:
 
 - Two roles initially: Admin and Operator. Both can operate across all brands. Admins additionally manage users, brands, matching rules, and columns. Defer the optional Viewer role.
-- One card per original uploaded PDF. Preserve the original bytes for download and printing.
+- One card per original uploaded PDF. Preserve the original bytes for admin export. Operators print and download the current eligible pages.
 - Detect quantities, bucket, carrier, and brand automatically wherever the document provides reliable evidence. Do not require routine bucket selection.
 - Add Awaiting print before Printed, Prepared, Shipped, and Archive. Record printing separately from column names and later card moves.
 - Downloading or opening a print dialog does not prove printing occurred. Use an explicit Mark printed action.

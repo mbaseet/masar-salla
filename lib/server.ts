@@ -49,7 +49,7 @@ export const CARD_SELECT=`SELECT f.*,
 export function hydrateFile<T extends Omit<FileCard,'carriers'> & {carriers: string | string[]}>(f:T) { return {...f,carriers:typeof f.carriers==='string'?JSON.parse(f.carriers) as string[]:f.carriers}; }
 export async function getFile(id: string) {
   await upgradeFileChecks(id);
-  const file=await one<FileCard & {object_key:string;created_by:string}>(`${CARD_SELECT} WHERE f.id=? AND f.expires_at>?`,id,now());
+  const file=await one<FileCard & {object_key:string;created_by:string;processed_at:string|null}>(`${CARD_SELECT} WHERE f.id=? AND f.expires_at>?`,id,now());
   if(!file) throw new HttpError(404,'الملف غير موجود أو انتهت مدة الاحتفاظ به.');
   return hydrateFile(file);
 }
@@ -87,7 +87,7 @@ export async function maintenance(force=false) {
     await db().batch([sql('DELETE FROM notes WHERE file_id=?',f.id),sql('DELETE FROM audit WHERE file_id=?',f.id),sql('DELETE FROM findings WHERE related_file_id=?',f.id),sql('DELETE FROM files WHERE id=?',f.id)]);
     removed++;
   }
-  await db().batch([sql('DELETE FROM order_index WHERE expires_at<=?',timestamp),sql("DELETE FROM settings WHERE key LIKE 'checks_v2:%' AND NOT EXISTS (SELECT 1 FROM files f WHERE 'checks_v2:' || f.id=settings.key)"),sql('DELETE FROM notes WHERE ref IS NOT NULL AND NOT EXISTS (SELECT 1 FROM occurrences o JOIN files f ON f.id=o.file_id WHERE o.ref=notes.ref AND o.brand_id=notes.brand_id AND f.expires_at>?)',timestamp),sql('DELETE FROM audit WHERE file_id IS NULL AND created_at<?',addDays(timestamp,-30))]);
+  await db().batch([sql('DELETE FROM order_index WHERE expires_at<=?',timestamp),sql('DELETE FROM shipment_print_controls WHERE expires_at<=?',timestamp),sql('DELETE FROM batch_print_refs WHERE expires_at<=?',timestamp),sql("DELETE FROM settings WHERE key LIKE 'checks_v2:%' AND NOT EXISTS (SELECT 1 FROM files f WHERE 'checks_v2:' || f.id=settings.key)"),sql('DELETE FROM notes WHERE ref IS NOT NULL AND NOT EXISTS (SELECT 1 FROM occurrences o JOIN files f ON f.id=o.file_id WHERE o.ref=notes.ref AND o.brand_id=notes.brand_id AND f.expires_at>?)',timestamp),sql('DELETE FROM audit WHERE file_id IS NULL AND created_at<?',addDays(timestamp,-30))]);
   const candidates=await rows<{id:string;brand_id:string}>(`SELECT f.id,f.brand_id FROM files f JOIN brands b ON b.id=f.brand_id WHERE f.stage='shipped' AND f.shipped_at IS NOT NULL AND b.archive_days>0 AND julianday(?) - julianday(f.shipped_at)>=b.archive_days AND f.expires_at>? AND f.changed_version=f.ack_version AND NOT EXISTS (SELECT 1 FROM findings i WHERE i.file_id=f.id AND i.status='open')`,timestamp,timestamp);
   if(candidates.length) await db().batch(candidates.flatMap(f=>[sql("UPDATE files SET stage='archive' WHERE id=? AND stage='shipped'",f.id),auditStatement({id:'system',name:'النظام',email:'',role:'admin',active:1},'auto_archive',{},f.brand_id,f.id)]));
   await db().batch([sql("INSERT INTO settings (key,value) VALUES ('maintenance_next',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",new Date(Date.now()+(expired.length===100?0:3600000)).toISOString()),sql("UPDATE settings SET value='1970-01-01' WHERE key='maintenance_lease'")]);

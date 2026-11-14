@@ -37,6 +37,9 @@ try{
  await page.locator('.column-add').click();await page.locator('input[type=file]').setInputFiles({name:'UI-minority.pdf',mimeType:'application/pdf',buffer:fixturePdf([1,1,4],950000001)});await page.getByRole('button',{name:/رفع وفحص/}).click();await readyQueue(1);await page.getByRole('button',{name:'مراجعة الملف',exact:true}).click();
  await page.locator('.quantity-attention').waitFor();assert.ok((await page.locator('.quantity-attention').innerText()).includes('950000003'));assert.equal(await page.locator('.quantity-exception-row').count(),1);assert.ok((await page.locator('.quantity-attention').innerText()).includes('٤'));
  await page.getByRole('button',{name:'معالجة التنبيهات المفتوحة',exact:true}).click();await page.getByRole('textbox',{name:'ملاحظة معالجة التنبيه'}).fill('تمت مراجعة الكمية وتجهيز أربع قطع.');await page.getByRole('button',{name:'حفظ المعالجة',exact:true}).click();await page.getByText('لا توجد تنبيهات مفتوحة',{exact:true}).waitFor();assert.equal(await page.locator('.quantity-exception-row').count(),1);await page.locator('.quantity-attention').waitFor();
+ const download=page.waitForEvent('download');
+ await page.getByRole('button',{name:'تنزيل نسخة الطباعة',exact:true}).click();
+ await (await download).delete();
  await page.getByRole('button',{name:'تأكيد الطباعة',exact:true}).click();await page.getByRole('button',{name:'نعم، تمت الطباعة',exact:true}).click();await page.getByText('تم تأكيد الطباعة',{exact:true}).waitFor();
  const file=(await allFiles()).files.find(f=>f.name==='UI-minority.pdf');assert.equal(file.quantity_attention,1);assert.equal(file.open_issues,0);assert.equal(file.stage,'printed');
  await page.screenshot({path:'.sites-runtime/ux/quantity-resolved-desktop.png'});await returnBoard();await page.reload();await page.locator('.waybill-card').filter({hasText:'UI-minority.pdf'}).getByRole('button').click();await page.locator('.quantity-attention').waitFor();
@@ -45,6 +48,16 @@ try{
  // Cancellation notes still work with the new review panel.
  await page.getByRole('tab',{name:/الملاحظات/}).click();await page.getByRole('textbox',{name:'رقم الطلب (اختياري)'}).fill('950000003');await page.getByRole('textbox',{name:'نص الملاحظة'}).fill('إلغاء هذا الطلب بعد الطباعة');await page.getByRole('button',{name:'إضافة الملاحظة',exact:true}).click();await page.getByText('تعديل بعد الطباعة',{exact:true}).first().waitFor();await page.getByRole('button',{name:'راجعت التعديلات'}).click();await page.getByText('تم تأكيد مراجعة التغييرات',{exact:true}).waitFor();
  pass('post-print note and acknowledgment still work in the revised panel');
+ await page.getByRole('button',{name:'معاينة الصفحات',exact:true}).click();
+ await page.getByRole('button',{name:'استبعاد الصفحة من الطباعة',exact:true}).click();
+ await page.getByRole('button',{name:'استبعاد الصفحة',exact:true}).click();
+ await page.getByRole('button',{name:'إعادة الصفحة للطباعة',exact:true}).click();
+ await page.getByRole('button',{name:'تم شحنها بالفعل',exact:true}).click();
+ await page.getByRole('button',{name:'نعم، تم الشحن',exact:true}).click();
+ await page.getByText('شُحنت مسبقًا',{exact:true}).first().waitFor();
+ await page.keyboard.press('Escape');
+ assert.equal((await page.request.get(`${origin}/api/files/${file.id}/print-plan`).then(res=>res.json())).printable,2);
+ pass('page preview supports reversible exclusions and marking an already dispatched shipment');
  // Delete cancellation first, then confirm; scope deletes only this test upload.
  await page.getByRole('button',{name:'حذف الملف',exact:true}).click();await page.getByRole('button',{name:'الاحتفاظ بالملف'}).click();assert.ok((await allFiles()).files.some(f=>f.id===file.id));
  await page.getByRole('button',{name:'حذف الملف',exact:true}).click();await page.getByRole('button',{name:'حذف نهائي',exact:true}).click();await page.getByText('حُذف الملف من اللوحة والتخزين',{exact:true}).waitFor();assert.ok(!(await allFiles()).files.some(f=>f.id===file.id));assert.equal((await page.request.get(`${origin}/api/files/${file.id}/download`)).status(),404);

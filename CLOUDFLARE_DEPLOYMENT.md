@@ -1,6 +1,6 @@
 # Cloudflare deployment
 
-Masar now runs independently on Cloudflare Workers, D1 and a private R2 bucket. Team members sign in using Cloudflare Access email codes. No ChatGPT account is required. The existing Sites publication is a separate deployment and is not updated by these commands.
+This guide covers the implemented Cloudflare Workers deployment path, which uses D1, private R2 and Cloudflare Access email-code login. Independent publication is still pending in the project record. The current configuration requires R2 activation and a configured Access application, and the project records a no-billing constraint. See [project context](PROJECT_CONTEXT.md) for current status and the proposed alternative. The existing ChatGPT Site is a separate deployment.
 
 ## Configuration
 

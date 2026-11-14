@@ -6,13 +6,15 @@ import {Miniflare,Response as MiniResponse} from 'miniflare';
 import {generateKeyPair,exportJWK,SignJWT} from 'jose';
 const {privateKey,publicKey}=await generateKeyPair('RS256');
 const testKeys={keys:[{...await exportJWK(publicKey),kid:'local-test'}]};
-const files=(await readdir('dist/server',{recursive:true})).filter(p=>p.endsWith('.js')&&p!=='index.js');
-const modules=['index.js',...files].map(p=>({type:'ESModule',path:resolve('dist/server',p)}));
+const files=(await readdir('dist/server',{recursive:true})).filter(p=>/\.(js|wasm)$/.test(p)&&p!=='index.js');
+const modules=['index.js',...files].map(p=>({type:p.endsWith('.wasm')?'CompiledWasm':'ESModule',path:resolve('dist/server',p)}));
 const mf=new Miniflare({name:'masar-runtime-test',modules,modulesRoot:resolve('dist/server'),compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],r2Buckets:['BUCKET'],bindings:{ACCESS_TEAM_DOMAIN:'https://masar-test.cloudflareaccess.com',ACCESS_AUD:'masar-test-audience',INITIAL_ADMIN_EMAIL:'owner@example.test'},outboundService:request=>{assert.equal(request.url,'https://masar-test.cloudflareaccess.com/cdn-cgi/access/certs');return MiniResponse.json(testKeys);},cf:false});
 try{
  const db=await mf.getD1Database('DB');
- const migration=await readFile('drizzle/0000_closed_lethal_legion.sql','utf8');
- for(const statement of migration.split('--> statement-breakpoint').map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
+ for(const name of (await readdir('drizzle')).filter(name=>name.endsWith('.sql')).sort()){
+  const migration=await readFile(`drizzle/${name}`,'utf8');
+  for(const statement of migration.split('--> statement-breakpoint').map(s=>s.trim()).filter(Boolean))await db.prepare(statement).run();
+ }
  await db.prepare('INSERT INTO brands (id,name,color,identifiers,columns,created_at) VALUES (?,?,?,?,?,?)').bind('qa','QA','#000000','[]','[]',new Date().toISOString()).run();
  await db.prepare('INSERT INTO files (id,brand_id,name,size,object_key,uploaded_at,expires_at,created_by) VALUES (?,?,?,?,?,?,?,?)').bind('expired-qa','qa','Synthetic cron test',1,'waybills/expired-qa.pdf',new Date(Date.now()-31*86400000).toISOString(),new Date(Date.now()-86400000).toISOString(),'qa').run();
  const worker=await mf.getWorker();

@@ -1,21 +1,27 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { env } from 'cloudflare:workers';
 import { z } from 'zod';
-import { analyzePages, DEFAULT_COLUMNS, MAX_FILE_BYTES, normalize, normalizeRef, parseRefList, type Brand, type PageRecord, type User, type FindingInput } from '@/lib/domain';
+import { analyzePages, detectPage, DEFAULT_COLUMNS, MAX_FILE_BYTES, normalize, normalizeRef, parseRefList, type Brand, type PageRecord, type User, type FindingInput } from '@/lib/domain';
 import { currentUser,requireAdmin,checkOrigin,db,bucket,sql,rows,one,now,uid,addDays,getBrands,getFile,CARD_SELECT,hydrateFile,auditStatement,maintenance,upgradeFileChecks,HttpError } from '@/lib/server';
+
+import { bulkShipmentMatches, changePageExclusion, confirmBatch, getPrintPlan, issueBatch, issueEarlyLabel, previewPage, shipmentAction, shipOrdersTogether } from '@/lib/printing';
+import { MAX_BATCH_REFS } from '@/lib/printing-types';
+import { originalPdf, pdfResponse, readPrivatePdf } from '@/lib/private-pdf';
 
 export const dynamic='force-dynamic';
 const pageSchema=z.object({page:z.number().int().min(1).max(10000),refs:z.array(z.string().regex(/^\d{1,40}$/)).max(20),tracking:z.string().max(100).nullable(),quantity:z.number().int().min(1).max(100000).nullable(),carrier:z.enum(['Aymakan','RedBox','DHL','Unknown']),sourceDate:z.string().max(100).nullable(),dateType:z.enum(['order','carrier','label']).nullable(),role:z.enum(['label','support','unknown']),brands:z.array(z.string().max(100)).max(20),matches:z.array(z.string().max(150)).max(50)});
 const brandSchema=z.object({name:z.string().trim().min(1).max(80),color:z.string().regex(/^#[0-9a-f]{6}$/i),identifiers:z.array(z.string().trim().min(2).max(150)).max(100),columns:z.array(z.object({id:z.string().regex(/^[a-z0-9_-]{1,50}$/),name:z.string().trim().min(1).max(60),color:z.string().regex(/^#[0-9a-f]{6}$/i)})).min(5).max(15),retention_days:z.number().int().min(1).max(90),archive_days:z.number().int().min(0).max(90),index_days:z.union([z.literal(0),z.literal(90)])});
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request:Request) { if(Number(request.headers.get('content-length')??0)>8*1024*1024) throw new HttpError(413,'الطلب أكبر من الحد المسموح.'); return request.json(); }
-async function processFile(id:string,pages:PageRecord[],user:User,expectedBucket?:'single'|'multiple'|null) {
+async function processFile(id:string,pages:PageRecord[],user:User,expectedBucket?:'single'|'multiple'|null, recheckBrand?:string) {
   const file=await getFile(id);
+  if(file.status==='ready' && recheckBrand===undefined) return file;
+  if(recheckBrand!==undefined && file.brand_id!==recheckBrand) throw new HttpError(409,'تغيّرت علامة الملف. أعد الفحص مرة أخرى.');
   if(!file.hash) throw new HttpError(409,'انتظر اكتمال رفع الملف أولًا.');
   if(pages.some((p,i)=>p.page!==i+1)) throw new HttpError(400,'يجب فحص جميع الصفحات بترتيبها دون تخطي أي صفحة.');
   const allBrands=await getBrands(); const ids=new Set(allBrands.map(b=>b.id));
   if(pages.some(p=>p.brands.some(id=>!ids.has(id)))) throw new HttpError(400,'تغيرت إعدادات العلامات؛ أعد فحص الملف.');
-  const claim=await one<{id:string}>("UPDATE files SET status='processing',processed_at=? WHERE id=? AND (status IN ('uploaded','ready') OR (status='processing' AND processed_at<?)) RETURNING id",now(),id,new Date(Date.now()-300000).toISOString());
+  const claim=await one<{id:string}>("UPDATE files SET status='processing',processed_at=? WHERE id=? AND brand_id=? AND (status='uploaded' OR (status='ready' AND ?=1) OR (status='processing' AND processed_at<?)) RETURNING id",now(),id,file.brand_id,Number(recheckBrand!==undefined),new Date(Date.now()-300000).toISOString());
   if(!claim) throw new HttpError(409,'الملف قيد الفحص بالفعل. انتظر قليلًا.');
   const result=analyzePages(pages,file.brand_id,expectedBucket,file.name,allBrands);
   try {
@@ -131,7 +137,7 @@ async function handle(request:Request) {
         }catch(error){await sql("UPDATE files SET status=?,expires_at=? WHERE id=? AND status='deleting'",file.status,file.expires_at,id).run();throw error;}
         return json({ok:true});
       }
-      if(!action && method==='GET') return json({file,findings:await rows('SELECT i.*, f.name AS related_name, f.uploaded_at AS related_uploaded_at FROM findings i LEFT JOIN files f ON f.id=i.related_file_id AND f.expires_at>? WHERE i.file_id=? AND (i.related_file_id IS NULL OR f.id IS NOT NULL) ORDER BY (i.status=\'open\') DESC,i.page',now(),id),notes:await rows('SELECT * FROM notes n WHERE n.brand_id=? AND (n.file_id=? OR (n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=? AND o.ref=n.ref))) ORDER BY n.created_at DESC',file.brand_id,id,id),orders:await rows('SELECT * FROM occurrences WHERE file_id=? ORDER BY page,ref',id),audit:await rows('SELECT * FROM audit WHERE file_id=? ORDER BY created_at DESC LIMIT 100',id)});
+      if(!action && method==='GET') return json({file,printPlan:await getPrintPlan(file,user),findings:await rows('SELECT i.*, f.name AS related_name, f.uploaded_at AS related_uploaded_at FROM findings i LEFT JOIN files f ON f.id=i.related_file_id AND f.expires_at>? WHERE i.file_id=? AND (i.related_file_id IS NULL OR f.id IS NOT NULL) ORDER BY (i.status=\'open\') DESC,i.page',now(),id),notes:await rows('SELECT * FROM notes n WHERE n.brand_id=? AND (n.file_id=? OR (n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=? AND o.ref=n.ref))) ORDER BY n.created_at DESC',file.brand_id,id,id),orders:await rows('SELECT * FROM occurrences WHERE file_id=? ORDER BY page,ref',id),audit:await rows('SELECT * FROM audit WHERE file_id=? ORDER BY created_at DESC LIMIT 100',id)});
       if(action==='content' && method==='PUT') {
         if(!request.body) throw new HttpError(400,'الملف فارغ.');
         const claimed=await one("UPDATE files SET status='receiving',processed_at=? WHERE id=? AND (status='uploading' OR (status='receiving' AND processed_at<?)) RETURNING id",now(),id,new Date(Date.now()-600000).toISOString()); if(!claimed) throw new HttpError(409,'تم رفع الملف بالفعل أو يجري رفعه.');
@@ -146,10 +152,51 @@ async function handle(request:Request) {
         }catch(error){console.error('PDF storage failed',error instanceof Error?error.message:'Unknown error');await bucket().delete(file.object_key);await sql("UPDATE files SET status='uploading' WHERE id=?",id).run();throw new HttpError(400,'تعذر حفظ PDF. تأكد من حجم الملف وسلامته ثم أعد المحاولة.');}
       }
       if(action==='process' && method==='POST') {const input=z.object({pages:z.array(pageSchema).min(1).max(10000),expectedBucket:z.enum(['single','multiple']).nullable().optional()}).parse(await body(request));return json({file:await processFile(id,input.pages,user,input.expectedBucket)});}
+      if(action==='print-plan' && method==='GET') return json(await getPrintPlan(file,user));
+      if(action==='preview' && method==='GET') {
+        const page=z.coerce.number().int().min(1).max(file.page_count).parse(url.searchParams.get('page'));
+        const preview=await previewPage(file,page);
+        return new Response(new Uint8Array(preview.data),{headers:{
+          'Content-Type':'application/octet-stream','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff',
+          'X-Preview-Width':String(preview.width),'X-Preview-Height':String(preview.height),
+        }});
+      }
+      if(action==='recheck' && method==='POST') {
+        if(!file.hash) throw new HttpError(409,'انتظر اكتمال رفع الملف أولًا.');
+        const brands=await getBrands();
+        const pages=await readPrivatePdf(file.object_key,document=>{
+          if(document.count<1 || document.count>10000) throw new HttpError(422,'عدد صفحات PDF خارج الحد المسموح.');
+          return Array.from({length:document.count},(_,i)=>detectPage(document.text(i+1),i+1,brands));
+        });
+        return json({file:await processFile(id,pages,user,null,file.brand_id)});
+      }
       if(action==='download' && method==='GET') {
-        const object=await bucket().get(file.object_key);if(!object)throw new HttpError(404,'لم يكتمل رفع الملف أو لم يعد متاحًا.');
-        await auditStatement(user,url.searchParams.get('purpose')==='inspect'?'inspected':'downloaded',{},file.brand_id,id).run();
-        return new Response(object.body,{headers:{'Content-Type':'application/pdf','Content-Length':String(object.size),'Content-Disposition':`${url.searchParams.get('inline')==='1'?'inline':'attachment'}; filename="waybills.pdf"; filename*=UTF-8''${encodeURIComponent(file.name)}`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox"}});
+        checkOrigin(request);
+        return await issueBatch(file,user,url.searchParams.get('inline')==='1');
+      }
+      if(action==='print-batch' && method==='POST') {
+        const input=z.object({inline:z.boolean().default(false)}).parse(await body(request));
+        return await issueBatch(file,user,input.inline);
+      }
+      if(action==='original' && method==='POST') {
+        requireAdmin(user);
+        const object=await originalPdf(file.object_key);
+        await auditStatement(user,'original_exported',{},file.brand_id,id).run();
+        return pdfResponse(object.body,object.size,file.name);
+      }
+      if(action==='page-exclusion' && method==='POST') {
+        const input=z.object({page:z.number().int().min(1).max(file.page_count),exclude:z.boolean()}).parse(await body(request));
+        await changePageExclusion(file,user,input.page,input.exclude);
+        return json({ok:true});
+      }
+      if(action==='shipment' && method==='POST') {
+        const input=z.object({page:z.number().int().min(1).max(file.page_count),
+          action:z.enum(['reserve','ship','release','clear_tracking']),priorCopy:z.string().max(100).optional(),expectedAt:z.string().datetime().optional()}).parse(await body(request));
+        return json(await shipmentAction(file,user,input));
+      }
+      if(action==='early-label' && method==='POST') {
+        const input=z.object({page:z.number().int().min(1).max(file.page_count)}).parse(await body(request));
+        return await issueEarlyLabel(file,user,input.page);
       }
       if(action==='move' && method==='POST') {
         const input=z.object({stage:z.string().max(50)}).parse(await body(request));const brand=(await getBrands()).find(b=>b.id===file.brand_id)!;
@@ -160,9 +207,9 @@ async function handle(request:Request) {
         await db().batch([sql('UPDATE files SET stage=?,shipped_at=? WHERE id=?',input.stage,input.stage==='shipped'?(file.stage==='shipped'?file.shipped_at:now()):null,id),auditStatement(user,'moved',{from:file.stage,to:input.stage},file.brand_id,id)]);return json({ok:true});
       }
       if(action==='printed' && method==='POST') {
-        if(file.status!=='ready')throw new HttpError(409,'أكمل الفحص أولًا.');
-        if(file.open_issues>0)throw new HttpError(409,'راجع التنبيهات وسجل معالجتها قبل تأكيد الطباعة.');
-        await db().batch([sql("UPDATE files SET stage='printed',printed_at=?,shipped_at=NULL WHERE id=?",now(),id),auditStatement(user,'printed',{},file.brand_id,id)]);return json({ok:true});
+        const {batchId}=z.object({batchId:z.string().uuid()}).parse(await body(request));
+        await confirmBatch(file,user,batchId);
+        return json({ok:true});
       }
       if(action==='acknowledge' && method==='POST') {
         const input=z.object({version:z.number().int().nonnegative()}).parse(await body(request));
@@ -181,7 +228,15 @@ async function handle(request:Request) {
         const parsed=stored.map(p=>JSON.parse(p.data) as PageRecord);
         const verification=analyzePages(parsed,target.id,null,file.name,await getBrands());
         if(verification.detectedBrandId!==target.id)throw new HttpError(409,'لم توجد كلمة تعريف للعلامة المطلوبة في الملف أو اسمه. راجع العلامة أولًا.');
-        await db().batch([sql("UPDATE files SET brand_id=?,expires_at=?,detected_brand_id=NULL WHERE id=?",target.id,addDays(file.uploaded_at,target.retention_days),id),sql('UPDATE notes SET brand_id=? WHERE file_id=? AND ref IS NULL',target.id,id),sql('DELETE FROM findings WHERE file_id=? OR related_file_id=?',id,id),auditStatement(user,'brand_moved',{from:file.brand_id,to:target.id},target.id,id)]);
+        const claimed=await one(`UPDATE files SET brand_id=?,expires_at=?,detected_brand_id=NULL,status='uploaded'
+          WHERE id=? AND brand_id=? AND status='ready' AND processed_at IS ? AND expires_at>?
+          AND NOT EXISTS(SELECT 1 FROM shipment_print_controls s WHERE s.source_file_id=files.id AND s.expires_at>?)
+          AND NOT EXISTS(SELECT 1 FROM file_print_batches b WHERE b.file_id=files.id) RETURNING id`,
+          target.id,addDays(file.uploaded_at,target.retention_days),id,file.brand_id,file.processed_at,now(),now());
+        if(!claimed) throw new HttpError(409,'الملف قيد العمل أو سبق إصدار بوالص منه. راجع نشاطه قبل نقله.');
+        await db().batch([sql('UPDATE notes SET brand_id=? WHERE file_id=? AND ref IS NULL',target.id,id),
+          sql('DELETE FROM findings WHERE file_id=? OR related_file_id=?',id,id),
+          auditStatement(user,'brand_moved',{from:file.brand_id,to:target.id},target.id,id)]);
         return json({file:await processFile(id,parsed,user)});
       }
       if(action==='notes' && method==='POST') {
@@ -197,16 +252,34 @@ async function handle(request:Request) {
       if(matches.length===0)throw new HttpError(409,'تمت معالجة هذه التنبيهات بالفعل.');
       await db().batch([sql("UPDATE findings SET status=?,resolution_note=?,resolved_by=?,resolved_at=? WHERE id IN (SELECT value FROM json_each(?)) AND status='open'",input.status,input.note,user.id,now(),JSON.stringify(matches.map(m=>m.id))),...([...new Set(matches.map(m=>m.file_id))].map(fileId=>auditStatement(user,'issues_resolved',{count:matches.filter(m=>m.file_id===fileId).length,status:input.status,note:input.note},matches.find(m=>m.file_id===fileId)!.brand_id,fileId)))]);return json({ok:true});
     }
-    if(path[0]==='search' && (method==='GET'||method==='POST')) {
-      const input=method==='POST'?z.object({refs:z.string().max(12000)}).parse(await body(request)):null;
-      const refs=input?parseRefList(input.refs):null; if(refs&&refs.length>500)throw new HttpError(400,'الحد الأقصى ٥٠٠ طلب في المرة الواحدة.');
+    if(path.join('/')==='search/ship' && method==='POST') {
+      const input=z.object({
+        brandId:z.string().min(1).max(100),
+        orders:z.array(z.object({ref:z.string().regex(/^\d{1,40}$/),tracking:z.string().max(100)})).min(1).max(MAX_BATCH_REFS),
+      }).parse(await body(request));
+      if(new Set(input.orders.map(order=>order.ref)).size!==input.orders.length) throw new HttpError(400,'توجد أرقام طلبات مكررة.');
+      return json(await shipOrdersTogether(input.brandId,input.orders,user));
+    }
+    if(path.length===1 && path[0]==='search' && (method==='GET'||method==='POST')) {
+      const input=method==='POST'?z.object({refs:z.string().max(12000),brandId:z.string().min(1).max(100).optional()}).parse(await body(request)):null;
+      const refs=input?parseRefList(input.refs):null; if(refs&&refs.length>MAX_BATCH_REFS)throw new HttpError(400,'الحد الأقصى ٥٠٠ طلب في المرة الواحدة.');
       const q=normalizeRef(url.searchParams.get('q')??'');if(!refs&&q.length<2)return json({results:[],missing:[],truncated:false});
-      const predicate=refs?'o.ref IN (SELECT value FROM json_each(?))':"instr(o.ref,?)>0";const parameter=refs?JSON.stringify(refs):q;
-      const found=await rows<{ref:string}>(`SELECT o.*,f.name,f.stage,f.uploaded_at,b.name AS brand_name,0 AS historical FROM occurrences o JOIN files f ON f.id=o.file_id JOIN brands b ON b.id=o.brand_id WHERE ${predicate} AND f.expires_at>? ORDER BY f.uploaded_at DESC,o.page LIMIT 2001`,parameter,now());
-      const historical=await rows<{ref:string}>(`SELECT o.ref,o.brand_id,o.page,o.file_name AS name,o.stage,o.uploaded_at,b.name AS brand_name,NULL AS file_id,1 AS historical FROM order_index o JOIN brands b ON b.id=o.brand_id WHERE ${predicate} AND o.expires_at>? LIMIT 2001`,parameter,now());
+      const brand=input?.brandId??null;
+      const predicate=(refs?'o.ref IN (SELECT value FROM json_each(?))':"instr(o.ref,?)>0")+(brand?' AND o.brand_id=?':'');
+      const params=[refs?JSON.stringify(refs):q,...(brand?[brand]:[])];
+      const time=now();
+      const [found,historical,bulkMatches]=await Promise.all([
+        rows<{ref:string}>(`SELECT o.*,f.name,f.stage,f.uploaded_at,b.name AS brand_name,0 AS historical FROM occurrences o JOIN files f ON f.id=o.file_id JOIN brands b ON b.id=o.brand_id WHERE ${predicate} AND f.expires_at>? ORDER BY f.uploaded_at DESC,o.page LIMIT 2001`,...params,time),
+        rows<{ref:string}>(`SELECT o.ref,o.brand_id,o.page,o.file_name AS name,o.stage,o.uploaded_at,b.name AS brand_name,NULL AS file_id,1 AS historical FROM order_index o JOIN brands b ON b.id=o.brand_id WHERE ${predicate} AND o.expires_at>? LIMIT 2001`,...params,time),
+        brand&&refs?bulkShipmentMatches(brand,refs):null,
+      ]);
       const results=[...found,...historical];
-      const present=refs?new Set((await rows<{ref:string}>(`SELECT wanted.value AS ref FROM json_each(?) wanted WHERE EXISTS (SELECT 1 FROM occurrences o JOIN files f ON f.id=o.file_id WHERE o.ref=wanted.value AND f.expires_at>?) OR EXISTS (SELECT 1 FROM order_index h WHERE h.ref=wanted.value AND h.expires_at>?)`,JSON.stringify(refs),now(),now())).map(r=>r.ref)):new Set<string>();
-      return json({results:results.slice(0,2000),missing:refs?.filter(ref=>!present.has(ref))??[],truncated:results.length>2000});
+      const truncated=results.length>2000;
+      const present=new Set(truncated&&refs?(await rows<{ref:string}>(`SELECT wanted.value AS ref FROM json_each(?) wanted
+        WHERE EXISTS (SELECT 1 FROM occurrences o JOIN files f ON f.id=o.file_id WHERE o.ref=wanted.value ${brand?'AND o.brand_id=?':''} AND f.expires_at>?)
+        OR EXISTS (SELECT 1 FROM order_index h WHERE h.ref=wanted.value ${brand?'AND h.brand_id=?':''} AND h.expires_at>?)`,
+        params[0],...params.slice(1),time,...params.slice(1),time)).map(r=>r.ref):results.map(r=>r.ref));
+      return json({results:results.slice(0,2000),missing:refs?.filter(ref=>!present.has(ref))??[],truncated,bulkMatches});
     }
     if(path[0]==='audit' && method==='GET') {const brand=url.searchParams.get('brand');return json({events:await rows(`SELECT a.*,COALESCE(f.name,CASE WHEN a.action='file_deleted' THEN json_extract(a.detail,'$.name') END) AS file_name FROM audit a LEFT JOIN files f ON f.id=a.file_id WHERE ${brand?'a.brand_id=? AND ':''}(a.file_id IS NULL OR f.expires_at>?) ORDER BY a.created_at DESC LIMIT 300`,...(brand?[brand]:[]),now())});}
     if(path[0]==='maintenance' && method==='POST') {requireAdmin(user);return json(await maintenance(true));}

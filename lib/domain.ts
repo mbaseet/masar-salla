@@ -1,3 +1,5 @@
+import type { PrintPlan } from './printing-types';
+
 export type Role = 'admin' | 'operator';
 export type Stage = 'awaiting' | 'printed' | 'prepared' | 'shipped' | 'archive' | string;
 export type Bucket = 'single' | 'multiple' | 'mixed' | 'unknown';
@@ -11,7 +13,7 @@ export type FileCard = { id: string; brand_id: string; name: string; size: numbe
 export type Note = { id: string; ref: string | null; type: string; body: string; actor_name: string; created_at: string };
 export type Audit = { id: string; action: string; actor_name: string; detail: string; created_at: string; file_id: string | null; file_name?: string };
 export type Occurrence = { file_id: string; brand_id: string; page: number; ref: string; tracking: string | null; quantity: number | null; carrier: string; source_date: string | null; date_type: string | null; page_role: string; name?: string; stage?: string; uploaded_at?: string; brand_name?: string; historical?: boolean };
-export type FileDetail = { file: FileCard; findings: Finding[]; notes: Note[]; orders: Occurrence[]; audit: Audit[] };
+export type FileDetail = { file: FileCard; findings: Finding[]; notes: Note[]; orders: Occurrence[]; audit: Audit[]; printPlan: PrintPlan };
 export const DEFAULT_COLUMNS: Column[] = [
   { id: 'awaiting', name: 'بانتظار الطباعة', color: '#397bca' },
   { id: 'printed', name: 'تمت الطباعة', color: '#8058b9' },
