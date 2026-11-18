@@ -19,5 +19,5 @@ export type PrintPlan = {
   pages: PrintPage[];
   printable: number;
   canExportOriginal: boolean;
-  batch: { id: string; current: boolean } | null;
+  batch: { id: string; current: boolean; confirmed: boolean } | null;
 };

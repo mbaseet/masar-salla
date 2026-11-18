@@ -11,8 +11,10 @@ export function sql(query: string, ...args: unknown[]) { return db().prepare(que
 export async function rows<T>(query: string, ...args: unknown[]) { return (await sql(query,...args).all<T>()).results; }
 export async function one<T>(query: string, ...args: unknown[]) { return await sql(query,...args).first<T>(); }
 export const addDays = (start: string, days: number) => new Date(new Date(start).getTime()+days*86400000).toISOString();
-export function auditStatement(user: User, action:string, detail:unknown, brandId:string|null=null,fileId:string|null=null) {
-  return sql('INSERT INTO audit (id,brand_id,file_id,action,actor_id,actor_name,detail,created_at) VALUES (?,?,?,?,?,?,?,?)',uid(),brandId,fileId,action,user.id,user.name,JSON.stringify(detail),now());
+export function auditStatement(user: User, action: string, detail: unknown, brandId: string | null = null, fileId: string | null = null, onlyAfterChange = false) {
+  const source = onlyAfterChange ? 'SELECT ?,?,?,?,?,?,?,? WHERE changes()>0' : 'VALUES (?,?,?,?,?,?,?,?)';
+  return sql('INSERT INTO audit (id,brand_id,file_id,action,actor_id,actor_name,detail,created_at) '+source,
+    uid(),brandId,fileId,action,user.id,user.name,JSON.stringify(detail),now());
 }
 export async function currentUser(): Promise<User> {
   const identity = getIdentity();
@@ -37,12 +39,15 @@ export function checkOrigin(request: Request) {
   if(request.headers.get('sec-fetch-site')==='cross-site') throw new HttpError(403,'مصدر الطلب غير مسموح.');
 }
 export async function getBrands(): Promise<Brand[]> {
-  const data=await rows<Omit<Brand,'identifiers'|'columns'> & {identifiers:string;columns:string}>('SELECT * FROM brands ORDER BY created_at');
-  return data.map(b=>({...b,identifiers:JSON.parse(b.identifiers),columns:JSON.parse(b.columns)}));
+  const data=await rows<Omit<Brand,'identifiers'|'columns'> & {identifiers:string;columns:string;configuration:string|null}>(
+    'SELECT b.*,c.configuration FROM brands b LEFT JOIN brand_order_categories c ON c.brand_id=b.id ORDER BY b.created_at');
+  return data.map(({configuration,...b})=>({...b,identifiers:JSON.parse(b.identifiers),columns:JSON.parse(b.columns),
+    ...(configuration ? {orderCategories:JSON.parse(configuration)} : {})}));
 }
 export const CARD_SELECT=`SELECT f.*,
   (SELECT CASE WHEN sum(o.quantity=1)=sum(o.quantity>=2) THEN count(*) ELSE min(sum(o.quantity=1),sum(o.quantity>=2)) END FROM occurrences o WHERE o.file_id=f.id AND o.page_role='label' AND o.quantity IS NOT NULL AND f.bucket='mixed') AS quantity_attention,
   (SELECT count(*) FROM findings i WHERE i.file_id=f.id AND i.status='open' AND (i.related_file_id IS NULL OR EXISTS (SELECT 1 FROM files related WHERE related.id=i.related_file_id AND related.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')))) AS open_issues,
+  (SELECT count(*) FROM findings i WHERE i.file_id=f.id AND i.status='open' AND i.kind='duplicate_file' AND (i.related_file_id IS NULL OR EXISTS (SELECT 1 FROM files related WHERE related.id=i.related_file_id AND related.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')))) AS duplicate_files,
   (SELECT count(*) FROM notes n WHERE n.brand_id=f.brand_id AND (n.file_id=f.id OR (n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=f.id AND o.ref=n.ref)))) AS note_count,
   (SELECT count(DISTINCT n.ref) FROM notes n WHERE n.brand_id=f.brand_id AND n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=f.id AND o.ref=n.ref)) AS attention_orders
   FROM files f`;

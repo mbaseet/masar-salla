@@ -28,6 +28,30 @@ The app rejects requests if Access is unconfigured, the token is invalid, or the
 
 Use Node 24 (22.13+ minimum). This repository uses its pinned Vinext/Vite/Workers versions; a framework upgrade is not required for deployment.
 
+## Scanner pilot
+
+`wrangler.scanner.jsonc` packages the Wasan scanner and its public information page. It uses Workers, Static Assets, and D1. The intended host is `masar-salla.mint-meow.workers.dev`. Verify the account, hostname, and existing Worker deployments before publishing. This is a separate deployment profile for the same planned hostname.
+
+1. Validate the scanner with `node tests/scanner-runtime.mjs` and `npx wrangler deploy --dry-run --config wrangler.scanner.jsonc`. Sign in with `npx wrangler login`, verify the account and Worker with `npx wrangler deployments list --config wrangler.scanner.jsonc`, and check migration status with `npx wrangler d1 migrations list DB --remote --config wrangler.scanner.jsonc`. Apply pending D1 migrations including `0002_scanner_pilot.sql` and `0003_salla_shipment_events.sql` before enabling the scanner. Publish with `npx wrangler deploy --config wrangler.scanner.jsonc` once the Worker name is confirmed for the pilot.
+2. Set `SCANNER_ACCESS_CODE` as a Worker secret using a randomly generated hexadecimal code of at least 32 characters. Rotation invalidates existing sessions. Staff supply the code at `/scan`.
+3. Register [the Masar app website](https://masar.mintmeow.com/) with Salla Partners, select Easy Mode, and enable `orders.read` and `shipping.read`. Set the authorization webhook to `https://masar-salla.mint-meow.workers.dev/webhooks/salla` using Salla's signature strategy.
+4. Set `SALLA_MERCHANT_ID`, `SALLA_WEBHOOK_SECRET`, `SALLA_CLIENT_ID`, `SALLA_CLIENT_SECRET`, and `SALLA_TOKEN_KEY` as Worker secrets. The token key is a randomly generated 32-byte value encoded as 64 hexadecimal characters. Keep it available for existing encrypted credentials. Install the app in the intended store to receive the authorization event.
+5. Verify the correct tracking, order reference, quantities, and selected options on a real label. Check phone camera behavior, Salla response fields, and Worker CPU usage before rolling out to staff. The recent shipment index is bounded to 600 shipment records per sync. Older or unindexed labels can be resolved by entering the order reference alongside the tracking number.
+
+See [Salla authorization](https://docs.salla.dev/421118m0) and [Salla app events](https://docs.salla.dev/421413m0).
+
+### Salla app website
+
+`wrangler.scanner-site.jsonc` deploys the public website to `masar.mintmeow.com` in the Mint Meow Cloudflare account. It serves the public landing page and stylesheet from the scanner assets and redirects staff to the scanner's `/scan` URL. Use a Cloudflare login with access to the Mint Meow zone for website deployments. Store scanner credentials and Salla secrets on the `masar-salla` Worker in the scanner account.
+
+### Additional scanner brands
+
+For a single store, the Worker uses `SCANNER_BRAND_ID`, `SCANNER_BRAND_NAME`, and `SALLA_MERCHANT_ID`. To enable more stores, set `SCANNER_BRANDS` to a JSON array of objects with `id`, `name`, and `merchantId`. Include Wasan in the array and use each brand’s existing Masar ID. Each merchant ID is a numeric string and appears once. The shared scanner login grants access to the configured brands. Each store owner installs the same Salla app to authorize their own connection.
+
+The Worker rotates through the configured brands, syncing one on each 15-minute trigger. For two brands, each receives a scheduled sync every 30 minutes.
+
+For a brand whose Salla app lacks the shipping API read scope, set `shipmentSource` to `webhook` in its `SCANNER_BRANDS` entry. Authorize the app with Orders read access in this mode. Enable `shipment.created`, `shipment.updated`, and `shipment.cancelled` in Salla. The Partners portal enables `webhooks.read_write` when you save the subscriptions. In webhook mode the scanner accepts that scope and rejects Orders write access. It reads current status and items from the Orders API and resolves tracking numbers from the signed shipment events it has received in the past 14 days. Issue a fresh test waybill after authorizing the demo store and enabling its events.
+
 ## Team management
 
 Add the same staff email in Settings → Team and the Cloudflare Access Allow policy. The app controls Admin/Operator roles, all-brand access, and active status. Disabling a user in the app blocks subsequent API requests even if their Access session still exists. Access policy changes manage the login gate. No app-managed passwords or password reset workflow is needed.

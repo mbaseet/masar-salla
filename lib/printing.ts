@@ -142,7 +142,11 @@ async function getPageStates(file: File, time: string) {
 export async function getPrintPlan(file: File, user: User): Promise<PrintPlan> {
   const [pages, batch] = await Promise.all([
     getPageStates(file, now()),
-    one<{ id: string; pages: string }>('SELECT id,pages FROM file_print_batches WHERE file_id=?', file.id),
+    one<{ id: string; pages: string; issued_at: string; confirmed_id: string | null }>(
+      `SELECT b.id,b.pages,b.issued_at,
+        (SELECT json_extract(a.detail,'$.batchId') FROM audit a
+          WHERE a.file_id=b.file_id AND a.action='printed' ORDER BY a.created_at DESC,a.rowid DESC LIMIT 1) AS confirmed_id
+        FROM file_print_batches b WHERE b.file_id=?`, file.id),
   ]);
   const printable = pages.filter(p => !p.excluded && !p.hold).map(p => p.page);
   return {
@@ -156,7 +160,14 @@ export async function getPrintPlan(file: File, user: User): Promise<PrintPlan> {
     }),
     printable: printable.length,
     canExportOriginal: user.role === 'admin',
-    batch: batch && { id: batch.id, current: batch.pages===JSON.stringify(printable) },
+    batch: batch && {
+      id: batch.id,
+      current: batch.pages===JSON.stringify(printable),
+      // Older confirmations recorded only a timestamp. New ones identify the exact issued copy.
+      confirmed: batch.confirmed_id === null
+        ? file.printed_at !== null && file.printed_at >= batch.issued_at
+        : batch.confirmed_id === batch.id,
+    },
   };
 }
 
@@ -234,7 +245,7 @@ export async function confirmBatch(file: File, user: User, batchId: string) {
       AND NOT EXISTS(SELECT 1 FROM findings i WHERE i.file_id=files.id AND i.status='open'
         AND (i.related_file_id IS NULL OR EXISTS(SELECT 1 FROM files related WHERE related.id=i.related_file_id AND related.expires_at>?)))`,
       time,time,file.id,time,...fileVersion(file,time),batchId,time),
-    auditChange(user,'printed',{},file),
+    auditChange(user,'printed',{ batchId },file),
   ]);
   if (!confirmed.meta.changes) throw new HttpError(409,'راجع التنبيهات وافتح نسخة الطباعة الحالية قبل التأكيد.');
 }

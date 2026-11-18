@@ -10,6 +10,10 @@ An Arabic RTL internal application for a small operations team. One card represe
 4. Open **طباعة الدفعة** or download **تنزيل نسخة الطباعة**, then explicitly confirm printing. New notes or exclusions after printing can require a review of papers already printed.
 5. Add team emails and roles under **أعضاء الفريق**, and allow their emails in Cloudflare Access. App roles and the login gate are separate.
 
+Drag a checked file from **بانتظار الطباعة** to the destination and confirm the move. Use **تأكيد الطباعة** in file details to record physical printing. Set a team-visible text and color with **تمييز الكارت**. Finding resolution notes are optional and appear under **تنبيهات تمت معالجتها**.
+
+Identical PDFs and complete matches of verified waybill pages produce a file-level duplicate warning for each matching file. Partial matches still show individual orders. DHL labels with no printed item count retain an unknown quantity and can be used without a quantity warning.
+
 One configured brand identifier anywhere in the PDF or filename verifies the entire file. Files without a matching identifier still need review. Existing cards upgrade using their saved evidence; use **إعادة الفحص** if an older card needs the new full-text check.
 
 Mixed single-item/2+ files show the minority orders with their Ref, page and actual quantity. Equal groups highlight both. These highlights stay on the card, in file review and on the attention sheet even after the warnings are resolved.
@@ -43,7 +47,25 @@ npm run dev -- --host 127.0.0.1
 
 Loopback development provides a local test sign-in at `/auth/login`. That mock is excluded from production. Runtime secrets belong in Cloudflare settings; do not commit them. See [Cloudflare deployment](CLOUDFLARE_DEPLOYMENT.md) for resource setup, login, administrator initialization, and publication.
 
-Apply migration **0001_page_print_controls.sql** before releasing this version. The ordinary download endpoint returns an operational print copy. The original export and private recheck use separate routes.
+Apply pending D1 migrations, including **0004_workflow_labels.sql**, before releasing this version. The ordinary download endpoint returns an operational print copy. The original export and private recheck use separate routes.
+
+## Order categories
+
+Open **الإعدادات → العلامات → تصنيفات الطلبات** to rename the two quantity tags and define up to three product groups per brand. Enter the relevant Salla product IDs or SKUs for each group. Rules match the exact set of groups in the order. When two rules match, the first rule in settings wins.
+
+The board shows a file's category counts using recent item data verified by the scanner. An operator can also choose a manual category in the file details and switch back to automatic classification. Category filters narrow the board view. The print workflow continues to use the file's print plan.
+
+## Scanner pilot
+
+The Arabic scanner is a Worker with static assets at `/scan`. Staff sign in once with the temporary shared access code. For a single configured brand the scanner selects it automatically. With multiple brands, staff can switch via the brand menu at the top of the scanner and order views. It remembers the last available brand on that device and clears the current scan when the brand changes. It verifies the shipment in the selected Salla store before showing order status, items, quantities, and selected options. Staff can add the order number printed on the label if the tracking number is missing from the recent index.
+
+```sh
+npx wrangler d1 migrations apply DB --config wrangler.scanner.jsonc --local --persist-to .wrangler/scanner-demo
+npx wrangler dev --config wrangler.scanner.jsonc --local --persist-to .wrangler/scanner-demo --port 5174 --var SCANNER_DEMO:true
+node tests/scanner-runtime.mjs
+```
+
+The loopback demo is at `http://127.0.0.1:5174/scan`. Use `demo-masar` and synthetic tracking `AY0000001234`. Wasan displays order `100001` and the second demo brand displays order `200001` for that tracking number. Select **تسجيل المرتجعات · تجريبي** and use the synthetic tracking number `RT0000001234` to test receipt confirmation. Demo receipts are kept for the current session in the page. See [Cloudflare deployment](CLOUDFLARE_DEPLOYMENT.md#scanner-pilot) for Salla setup.
 
 ## Verification
 

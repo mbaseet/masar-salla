@@ -1,15 +1,16 @@
 import type { PrintPlan } from './printing-types';
+import type { CategorySummary, OrderCategories } from './order-categories';
 
 export type Role = 'admin' | 'operator';
 export type Stage = 'awaiting' | 'printed' | 'prepared' | 'shipped' | 'archive' | string;
 export type Bucket = 'single' | 'multiple' | 'mixed' | 'unknown';
 export type Column = { id: string; name: string; color: string };
-export type Brand = { id: string; name: string; color: string; identifiers: string[]; columns: Column[]; retention_days: number; archive_days: number; index_days: number };
+export type Brand = { id: string; name: string; color: string; identifiers: string[]; columns: Column[]; retention_days: number; archive_days: number; index_days: number; orderCategories?: OrderCategories };
 export type User = { id: string; email: string; name: string; role: Role; active: number };
 export type PageRecord = { page: number; refs: string[]; tracking: string | null; quantity: number | null; carrier: 'Aymakan' | 'RedBox' | 'DHL' | 'Unknown'; sourceDate: string | null; dateType: 'order' | 'label' | 'carrier' | null; role: 'label' | 'support' | 'unknown'; brands: string[]; matches: string[] };
 export type FindingInput = { kind: string; page: number | null; ref: string | null; message: string; relatedFileId?: string; relatedPage?: number };
 export type Finding = FindingInput & { id: string; file_id: string; status: string; resolution_note: string | null; related_file_id: string | null; related_page: number | null; related_name?: string; related_uploaded_at?: string; created_at: string; resolved_at?: string };
-export type FileCard = { id: string; brand_id: string; name: string; size: number; hash: string | null; status: string; stage: string; bucket: Bucket; detected_brand_id: string | null; page_count: number; waybill_count: number; carriers: string[]; uploaded_at: string; expires_at: string; printed_at: string | null; shipped_at: string | null; changed_version: number; ack_version: number; open_issues: number; note_count: number; attention_orders: number; quantity_attention: number; reviewed_at: string | null };
+export type FileCard = { id: string; brand_id: string; name: string; size: number; hash: string | null; status: string; stage: string; bucket: Bucket; detected_brand_id: string | null; page_count: number; waybill_count: number; carriers: string[]; uploaded_at: string; expires_at: string; printed_at: string | null; shipped_at: string | null; changed_version: number; ack_version: number; open_issues: number; duplicate_files: number; note_count: number; attention_orders: number; quantity_attention: number; reviewed_at: string | null; label_text: string | null; label_color: FileLabelColor | null; categories?: CategorySummary };
 export type Note = { id: string; ref: string | null; type: string; body: string; actor_name: string; created_at: string };
 export type Audit = { id: string; action: string; actor_name: string; detail: string; created_at: string; file_id: string | null; file_name?: string };
 export type Occurrence = { file_id: string; brand_id: string; page: number; ref: string; tracking: string | null; quantity: number | null; carrier: string; source_date: string | null; date_type: string | null; page_role: string; name?: string; stage?: string; uploaded_at?: string; brand_name?: string; historical?: boolean };
@@ -22,9 +23,21 @@ export const DEFAULT_COLUMNS: Column[] = [
   { id: 'archive', name: 'الأرشيف', color: '#778399' },
 ];
 export const BUCKET_NAMES: Record<Bucket, string> = { single: 'حبة واحدة', multiple: 'حبتان أو أكثر', mixed: 'كميات مختلطة', unknown: 'غير محدد' };
+export function bucketName(bucket: Bucket, brand?: Brand) {
+  return (bucket==='single' || bucket==='multiple' ? brand?.orderCategories?.labels[bucket] : undefined) ?? BUCKET_NAMES[bucket];
+}
 export const RESOLUTION_NAMES: Record<string, string> = { confirmed_error: 'خطأ مؤكد', false_alarm: 'إنذار غير صحيح', voided: 'ملغي / غير مستخدم' };
 export const NOTE_NAMES: Record<string, string> = { cancelled: 'إلغاء', changed: 'تعديل', other: 'ملاحظة' };
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const FILE_LABEL_COLORS = {
+  amber: 'أصفر', blue: 'أزرق', green: 'أخضر', pink: 'وردي', violet: 'بنفسجي',
+};
+export type FileLabelColor = keyof typeof FILE_LABEL_COLORS;
+
+export function moveNeedsConfirmation(file: Pick<FileCard, 'stage' | 'printed_at'>, stage: string) {
+  return file.stage==='awaiting' || stage==='printed'
+    || (!file.printed_at && (stage==='prepared' || stage==='shipped'));
+}
 
 export function normalize(value: string): string {
   return value.normalize('NFKC').toLowerCase().replace(/[\u064b-\u065f\u0670\u0640]/g, '').replace(/[إأآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/[٠-٩]/g, c => String(c.charCodeAt(0) - 1632)).replace(/[۰-۹]/g, c => String(c.charCodeAt(0) - 1776)).replace(/[^\p{L}\p{N}.]+/gu, ' ').trim().replace(/\s+/g, ' ');
@@ -82,7 +95,7 @@ export function analyzePages(pages: PageRecord[], brandId: string, expectedBucke
     const ref = p.refs.length === 1 ? p.refs[0] : null;
     if (p.carrier === 'Unknown' || p.refs.length !== 1) findings.push({ kind: 'unreadable', page: p.page, ref, message: p.carrier === 'Unknown' ? 'تصميم شركة الشحن غير معروف؛ تحتاج الصفحة إلى مراجعة.' : p.refs.length === 0 ? 'لم يتم العثور على رقم الطلب.' : `تحتوي الصفحة على أكثر من رقم طلب: ${p.refs.join('، ')}` });
     if (!p.tracking) findings.push({ kind: 'tracking_unknown', page: p.page, ref, message: 'لم يتم العثور على رقم تتبع واضح.' });
-    if (p.role === 'label' && p.quantity === null) findings.push({ kind: 'quantity_unknown', page: p.page, ref, message: 'عدد المنتجات غير موجود؛ عدد الطرود لا يحدد كمية الطلب.' });
+    if (p.role === 'label' && p.carrier !== 'DHL' && p.quantity === null) findings.push({ kind: 'quantity_unknown', page: p.page, ref, message: 'عدد المنتجات غير موجود؛ عدد الطرود لا يحدد كمية الطلب.' });
     if (p.role === 'label' && p.quantity !== null && (expectedBucket==='single'?p.quantity!==1:expectedBucket==='multiple'?p.quantity<2:exceptions.pages.has(p.page))) findings.push({ kind: 'bucket_mismatch', page: p.page, ref, message: `كمية الطلب ${p.quantity}؛ تختلف عن مجموعة الكمية ${expectedBucket==='single'||(!expectedBucket&&exceptions.dominant==='single')?'حبة واحدة':expectedBucket==='multiple'||exceptions.dominant==='multiple'?'حبتان أو أكثر':'المختلطة'}.` });
     if (p.role === 'support' && !labels.some(l => l.refs.length === 1 && l.refs[0] === ref && l.tracking === p.tracking && l.carrier === p.carrier)) findings.push({ kind: 'orphan_document', page: p.page, ref, message: 'مستند مرافق بدون ملصق شحن مطابق في هذا الملف.' });
   }

@@ -117,6 +117,34 @@ async function refs(bytes) {
   return inspect(bytes,pdf=>Array.from({length:pdf.count},(_,i)=>detectPage(pdf.text(i+1),i+1,[testBrand,otherBrand]).refs[0]));
 }
 
+const workflowPdf=fixturePdf([1,1],907000001);
+const workflowFile=await upload(workflowPdf);
+assert.equal((await call(`${workflowFile}/move`,{stage:'prepared'})).status,409);
+assert.equal((await call(`${workflowFile}/move`,{stage:'prepared',fromStage:'awaiting',confirmed:true})).status,200);
+assert.equal((await call(workflowFile)).file.printed_at,null);
+assert.equal((await call(`${workflowFile}/move`,{stage:'printed',fromStage:'awaiting',confirmed:true})).status,409);
+assert.equal((await call(`${workflowFile}/move`,{stage:'printed',fromStage:'prepared',confirmed:true})).status,200);
+assert.equal((await call(workflowFile)).file.stage,'printed');
+const label={text:'أولوية اليوم',color:'pink'};
+assert.equal((await call(`${workflowFile}/label`,{label:{...label,color:'red'}})).status,400);
+assert.equal((await call(`${workflowFile}/label`,{label})).status,200);
+assert.equal((await call(workflowFile,undefined,second)).file.label_text,label.text);
+assert.equal((await call(workflowFile,undefined,second)).file.label_color,label.color);
+assert.equal((await call(`${workflowFile}/label`,{label:null})).status,200);
+assert.equal((await call(workflowFile)).file.label_text,null);
+const copiedFile=await upload(Buffer.concat([workflowPdf,Buffer.from('\n% regenerated\n')]));
+const duplicateFindings=(await call(copiedFile)).findings;
+assert.deepEqual(duplicateFindings.map(f=>f.kind),['duplicate_file']);
+assert.equal((await call(copiedFile)).file.duplicate_files,1);
+assert.deepEqual((await call(workflowFile)).findings.map(f=>f.kind),['duplicate_file']);
+assert.equal((await call('findings',{ids:duplicateFindings.map(f=>f.id),status:'voided'})).status,200);
+assert.equal((await call(copiedFile)).findings[0].resolution_note,null);
+assert.equal((await call(copiedFile)).file.open_issues,0);
+const partialFile=await upload(fixturePdf([1],907000001));
+assert.ok((await call(partialFile)).findings.every(f=>f.kind==='duplicate_order'));
+assert.equal((await call(partialFile)).file.open_issues,2);
+console.log('PASS confirmed stage moves, label validation and persistence, consolidated duplicate files, partial overlap and optional resolution notes');
+
 const original=fixturePdf([1,1,1],910000001);
 const file=await upload(original);
 const snapshot=await call(`${file}/print-plan`);
@@ -145,8 +173,12 @@ assert.deepEqual(await refs((await call(`${file}/download?purpose=inspect`)).byt
 assert.equal((await call(`${file}/page-exclusion`,{page:2,exclude:false})).status,200);
 assert.deepEqual(await refs((await call(`${file}/print-batch`,{})).bytes),['910000002','910000003']);
 const current=(await call(`${file}/print-plan`)).batch;
+assert.equal(current.confirmed,false);
 assert.equal((await call(`${file}/printed`,{batchId:current.id})).status,200);
 assert.equal((await call(file)).file.stage,'printed');
+assert.equal((await call(`${file}/print-plan`)).batch.confirmed,true);
+assert.equal((await call(`${file}/print-batch`,{})).status,200);
+assert.equal((await call(`${file}/print-plan`)).batch.confirmed,false);
 
 const duplicate=await upload(original);
 assert.equal((await call(`${duplicate}/print-plan`)).pages[0].shipment.state,'shipped');
@@ -247,6 +279,50 @@ database.prepare("UPDATE pages SET data=json_set(data,'$.refs',json_array('93100
 assert.equal((await searchBulk(['931000003'])).bulkMatches[0].state,'page_review');
 assert.equal((await call('search/ship',{brandId:'wassan',orders:[{ref:'931000003',tracking:'931000103'}]})).status,409);
 console.log('PASS 100-order bulk shipment, duplicate copies, brand isolation, atomic stale selection, audit, retry, filtered bytes and concurrent printing');
+
+
+const categoryConfig = {
+  labels:{single:'قطعة وسن',multiple:'عدة قطع'},
+  products:[
+    {id:'bracelet',name:'سوار',keys:['111','BRACELET']},
+    {id:'ring',name:'خاتم',keys:['222','RING']},
+    {id:'third',name:'المنتج الثالث',keys:['333']},
+  ],
+  rules:[
+    {id:'bracelet-one',name:'سوار واحد',products:['bracelet'],quantity:'one'},
+    {id:'bracelet-more',name:'عدة أساور',products:['bracelet'],quantity:'multiple'},
+    {id:'ring-only',name:'خاتم فقط',products:['ring'],quantity:'any'},
+    {id:'both',name:'سوار وخاتم',products:['bracelet','ring'],quantity:'any'},
+  ],
+};
+const currentBrand = (await call('bootstrap',undefined,admin)).brands.find(brand=>brand.id==='wassan');
+assert.equal((await call('brands/wassan',{...currentBrand,orderCategories:categoryConfig},first)).status,403);
+const savedBrand = await call('brands/wassan',{...currentBrand,orderCategories:categoryConfig},admin);
+assert.equal(savedBrand.status,200,savedBrand.error);
+assert.deepEqual(savedBrand.brands.find(brand=>brand.id==='wassan').orderCategories,categoryConfig);
+assert.equal(savedBrand.brands.find(brand=>brand.id==='other').orderCategories,undefined);
+const categorized = await upload(fixturePdf([1,2,2,3,1],933000001));
+const expires = Math.floor(Date.now()/1000)+600;
+database.prepare("INSERT INTO salla_connections(brand_id,merchant_id,credentials,expires_at,event_at) VALUES ('wassan','10','fixture',?,'now')").run(expires);
+const cache = database.prepare("INSERT INTO salla_order_products(brand_id,ref,products,expires_at) VALUES ('wassan',?,?,?)");
+const item = (productId,sku,quantity)=>({productId,sku,quantity});
+cache.run('933000001',JSON.stringify([item('111',null,1)]),expires);
+cache.run('933000002',JSON.stringify([item(null,'bracelet',2)]),expires);
+cache.run('933000003',JSON.stringify([item('111',null,1),item('222',null,1)]),expires);
+cache.run('933000004',JSON.stringify([item('111',null,1),item('222',null,1),item('333',null,1)]),expires);
+cache.run('933000005',JSON.stringify([item('222',null,1)]),expires-1200);
+const summary = {counts:{'bracelet-one':1,'bracelet-more':1,both:1},manual:null,unclassified:2};
+assert.deepEqual((await call(categorized)).file.categories,summary);
+const all = await call('files?brand=wassan');
+assert.deepEqual(all.files.find(file=>file.id===categorized.split('/')[1]).categories,summary);
+assert.equal((await call(categorized+'/category',{ruleId:'unknown'})).status,409);
+assert.equal((await call(categorized+'/category',{ruleId:'ring-only'})).status,200);
+assert.equal((await call(categorized)).file.categories.manual,'ring-only');
+assert.equal((await call(categorized+'/category',{ruleId:null})).status,200);
+assert.deepEqual((await call(categorized)).file.categories,summary);
+assert.equal((await call(categorized+'/print-plan')).printable,5);
+assert.equal((await call(categorized)).audit.filter(event=>event.action==='order_category_changed').length,2);
+console.log('PASS brand category settings, exact combinations, expired evidence, manual overrides and unchanged print plan');
 
 const directory=process.env.TEST_PRIVATE_WAYBILLS;
 if(directory) {

@@ -14,7 +14,7 @@ for(const [index,name] of files.entries()) {
  doc.destroy();const result=analyzePages(pages,'wassan',null,name,brands);
  assert.equal(result.bucket,expected.get(pages.length));assert.equal(result.waybillCount,pages.length===6?3:pages.length);
  const kinds=[...new Set(result.findings.map(f=>f.kind))];
- assert.deepEqual(kinds.sort(),pages.length===6?['quantity_unknown']:[]);
+ assert.deepEqual(kinds,[]);
  total+=pages.length;pages.flatMap(p=>p.refs).forEach(ref=>refs.add(ref));
  // Ignored local QA state: minimal detection fields only, never raw extracted text.
  await writeFile(`.sites-runtime/sample-records/${pages.length}.json`,JSON.stringify({name,pages}));

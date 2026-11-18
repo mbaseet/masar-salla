@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#edf4ef">
+  <title>الماسح | مسار</title>
+  <link rel="stylesheet" href="/scan.css">
+  <script type="module" src="/scan.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <a class="wordmark" href="/"><span class="mark" aria-hidden="true">م</span>مسار</a>
+      <div class="signed-in" id="signed-in" hidden>
+        <span class="brand" id="brand" hidden></span>
+        <select class="brand" id="brand-picker" aria-label="العلامة التجارية" hidden></select>
+        <button class="quiet" id="change-mode" type="button" hidden>العمليات</button>
+        <button class="quiet" id="logout" type="button">خروج</button>
+      </div>
+    </header>
+
+    <p id="loading" class="notice" role="status">جارٍ التحميل…</p>
+    <p id="error" class="notice error" role="alert" hidden></p>
+    <section id="login-view" class="card" hidden>
+      <h1>دخول فريق التجهيز</h1>
+      <form id="login-form">
+        <label for="access-code">رمز الدخول</label>
+        <input id="access-code" name="code" type="password" dir="ltr" autocomplete="current-password" maxlength="128" required>
+        <button type="submit" class="primary">دخول</button>
+      </form>
+    </section>
+
+    <section id="mode-view" class="card" hidden>
+      <h1>اختَر العملية</h1>
+      <button id="shipping-mode" class="primary" type="button">تجهيز الشحن</button>
+      <button id="return-mode" class="secondary" type="button">تسجيل المرتجعات · تجريبي</button>
+    </section>
+
+    <section id="scan-view" class="card" hidden>
+      <h1 id="scan-title">مسح بوليصة</h1>
+      <p id="connection" class="notice" role="status" hidden></p>
+      <div id="camera" class="camera" hidden>
+        <video id="video" autoplay muted playsinline aria-label="معاينة الكاميرا"></video>
+        <div class="scan-frame" aria-hidden="true"></div>
+      </div>
+      <button id="start-camera" class="primary" type="button">فتح الكاميرا</button>
+      <form id="lookup-form">
+        <label for="tracking">رقم التتبع</label>
+        <input id="tracking" name="tracking" dir="ltr" type="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="80" required>
+        <div id="ref-field" hidden>
+          <label for="reference">رقم الطلب من البوليصة</label>
+          <input id="reference" name="reference" dir="ltr" type="text" inputmode="numeric" maxlength="40" autocomplete="off">
+        </div>
+        <button type="submit" id="search" class="secondary">عرض الطلب</button>
+        <button type="button" id="show-reference" class="quiet">إضافة رقم الطلب</button>
+      </form>
+    </section>
+
+    <section id="order-view" class="card" hidden aria-labelledby="order-title">
+      <div class="order-header">
+        <h1 id="order-title" tabindex="-1">الطلب <bdi id="order-ref"></bdi></h1>
+        <span id="order-status" class="badge"></span>
+      </div>
+      <div class="tracking-line"><span>رقم التتبع</span><bdi id="order-tracking"></bdi></div>
+      <h2>المنتجات</h2>
+      <ul id="items" class="items"></ul>
+      <p id="checked" class="checked"></p>
+      <button id="start-return" class="secondary" type="button" hidden>تسجيل استلام المرتجع</button>
+      <div id="confirm-return" class="notice" hidden>
+        <p>أكد استلام المنتجات المرتجعة فعليًا. التسجيل هنا تجريبي.</p>
+        <button id="save-return" class="primary" type="button">تأكيد الاستلام التجريبي</button>
+        <button id="cancel-return" class="quiet" type="button">رجوع</button>
+      </div>
+      <p id="return-recorded" class="notice" role="status" hidden>تم تسجيل الاستلام التجريبي.</p>
+      <button id="next" class="primary" type="button">مسح البوليصة التالية</button>
+    </section>
+  </main>
+</body>
+</html>

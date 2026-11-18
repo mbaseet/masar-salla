@@ -12,6 +12,12 @@ test('all pages are checked, including unknown layouts with readable Ref',()=>{c
 test('more than one Ref is unreadable',()=>assert.ok(analyzePages([page({refs:['1234','5678']})],'wassan').findings.some(f=>f.kind==='unreadable')));
 test('quantity mismatch names offending order and page',()=>{const r=analyzePages([page(),page({page:2,refs:['5678'],quantity:2})],'wassan','single');assert.equal(r.bucket,'mixed');assert.ok(r.findings.some(f=>f.kind==='bucket_mismatch'&&f.ref==='5678'&&f.page===2));});
 test('DHL support pair is one shipment; actual repeated label is a duplicate',()=>{const label=page({carrier:'DHL',quantity:null,brands:[]});const support=page({...label,page:2,role:'support'});const r=analyzePages([label,support],'wassan');assert.equal(r.waybillCount,1);assert.equal(r.bucket,'unknown');assert.equal(r.findings.filter(f=>f.kind==='duplicate_order').length,0);assert.ok(r.findings.some(f=>f.kind==='brand_unknown'));assert.ok(analyzePages([label,support,page({...label,page:3})],'wassan').findings.some(f=>f.kind==='duplicate_order'));});
+test('missing item quantity on DHL stays unknown without a finding',()=>{
+  const label=page({carrier:'DHL',quantity:null});
+  const result=analyzePages([label],'wassan');
+  assert.equal(result.bucket,'unknown');
+  assert.ok(!result.findings.some(f=>f.kind==='quantity_unknown'));
+});
 test('unmatched supporting page is flagged',()=>assert.ok(analyzePages([page({role:'support'})],'wassan').findings.some(f=>f.kind==='orphan_document')));
 test('wrong brand produces one file-level finding and a move target',()=>{const r=analyzePages([page({brands:['other']}),page({page:2,refs:['2222'],brands:[]})],'wassan');assert.equal(r.findings.filter(f=>f.kind.startsWith('brand_')).length,1);assert.equal(r.findings[0].page,null);assert.equal(r.detectedBrandId,'other');});
 test('unknown quantity never becomes single based on a known neighbor',()=>assert.equal(analyzePages([page(),page({page:2,refs:['5678'],quantity:null})],'wassan').bucket,'unknown'));

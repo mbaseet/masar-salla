@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileText, Printer } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Download, FileText, Printer } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -92,13 +92,46 @@ function PagePreview({ fileId, page }: { fileId: string; page: number }) {
 
 type Decision = 'ship' | 'release' | 'exclude' | 'clear_tracking' | 'reconcile';
 
-export default function PrintControls({ file, plan, pageNumber, onPage, disabled, onChange }: {
+function batchStatus(file: FileCard, plan: PrintPlan, openIssues: number) {
+  if (file.status === 'processing') {
+    return { title: 'جارٍ فحص الملف', detail: 'تتاح نسخة الطباعة بعد اكتمال الفحص.' };
+  }
+  if (file.status === 'uploaded') {
+    return { title: 'الفحص غير مكتمل', detail: 'يمكنك استئناف الفحص من قسم نتيجة الفحص.' };
+  }
+  if (file.status !== 'ready') {
+    return { title: 'الرفع غير مكتمل', detail: 'أكمل رفع الملف وفحصه لفتح نسخة الطباعة.' };
+  }
+  if (openIssues) {
+    return { title: 'تنبيهات تحتاج مراجعة', detail: `راجع ${n(openIssues)} من التنبيهات المفتوحة قبل تأكيد الطباعة.` };
+  }
+  if (!plan.printable) {
+    return { title: 'لا توجد صفحات متبقية للطباعة', detail: 'اعرض حالة كل صفحة من معاينة الصفحات.' };
+  }
+  if (plan.batch && !plan.batch.current) {
+    return { title: 'تغيّرت صفحات الدفعة', detail: 'افتح نسخة محدثة وراجع أي أوراق طبعتها من النسخة السابقة.' };
+  }
+  if (plan.batch?.confirmed && file.printed_at) {
+    return { title: 'الطباعة مؤكدة', detail: `سُجل تأكيد الطباعة ${date(file.printed_at,true)}.` };
+  }
+  if (plan.batch) {
+    return { title: 'بانتظار تأكيد الطباعة', detail: 'أكد الطباعة بعد اكتمالها على الورق.' };
+  }
+  return { title: 'جاهز للطباعة', detail: 'افتح نسخة الدفعة أو نزّلها لبدء الطباعة.' };
+}
+
+export default function PrintControls({
+  file, plan, pageNumber, onPage, disabled, onChange, openIssues, onReview, onConfirm,
+}: {
   file: FileCard;
   plan: PrintPlan;
   pageNumber: number | null;
   onPage: (page: number | null) => void;
   disabled: boolean;
   onChange: () => Promise<void>;
+  openIssues: number;
+  onReview: () => void;
+  onConfirm: (() => void) | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [original, setOriginal] = useState(false);
@@ -111,6 +144,10 @@ export default function PrintControls({ file, plan, pageNumber, onPage, disabled
   const shipped = plan.pages.filter(p => p.shipment?.state==='shipped').length;
   const skipped = plan.pages.length - plan.printable;
   const prefix = file.name.replace(/\.pdf$/i,'');
+  const status = batchStatus(file,plan,openIssues);
+  const needsReview = file.status==='ready' && openIssues>0;
+  const showInspection = needsReview || file.status==='uploaded';
+  const staleBatch = !!plan.batch && !plan.batch.current;
 
   useEffect(() => {
     setDecision(null);
@@ -182,18 +219,29 @@ export default function PrintControls({ file, plan, pageNumber, onPage, disabled
   }[decision];
 
   return <>
-    {file.status==='ready'&&<div className="print-summary" aria-live="polite">
-      <strong>{n(plan.printable)} صفحة للطباعة</strong>
-      {skipped>0&&<span>{n(skipped)} خارج الدفعة{shipped>0&&` · ${n(shipped)} صفحة لشحنات سُلّمت`}</span>}
-      {!plan.printable&&<p>لا توجد صفحات متبقية في نسخة الطباعة.</p>}
-    </div>}
-    {plan.batch&&!plan.batch.current&&<div className="warning-banner" role="status">تغيّرت صفحات الدفعة. استبدل النسخة السابقة بنسخة جديدة وراجع أي أوراق سبق طباعتها.</div>}
-    <div className="file-actions">
-      <Button disabled={unavailable||!plan.printable} onClick={()=>batch(true)}><Printer/> طباعة الدفعة</Button>
-      <Button variant="outline" disabled={unavailable||!plan.printable} onClick={()=>batch(false)}><Download/> تنزيل نسخة الطباعة</Button>
-      <Button variant="outline" disabled={unavailable||!plan.pages.length} onClick={()=>onPage(plan.pages[0]?.page??null)}><FileText/> معاينة الصفحات</Button>
-      {plan.canExportOriginal&&<Button variant="ghost" size="sm" disabled={disabled||busy||!file.hash} onClick={()=>setOriginal(true)}>تنزيل الأصل للإدارة</Button>}
-    </div>
+    <section className="print-workflow" aria-label="حالة طباعة الدفعة">
+      <div aria-live="polite">
+        <h3>{status.title}</h3>
+        <p>{status.detail}</p>
+        {staleBatch && (needsReview || !plan.printable) &&
+          <p className="print-stale">تغيّرت صفحات الدفعة. راجع أي أوراق من النسخة السابقة.</p>}
+        {file.status==='ready'&&<div className="print-summary">
+          <strong>{n(plan.printable)} صفحة للطباعة</strong>
+          {skipped>0&&<span>{n(skipped)} خارج الدفعة{shipped>0&&` · ${n(shipped)} صفحة لشحنات سُلّمت`}</span>}
+        </div>}
+      </div>
+      <div className="file-actions">
+        {showInspection&&<Button disabled={disabled||busy} onClick={onReview}>
+          {needsReview ? 'مراجعة التنبيهات' : 'فتح نتيجة الفحص'}
+        </Button>}
+        {onConfirm&&<Button disabled={unavailable} onClick={onConfirm}><Check/> تأكيد الطباعة</Button>}
+        <Button variant={needsReview||onConfirm||(plan.batch?.current&&plan.batch.confirmed)?'outline':'default'}
+          disabled={unavailable||!plan.printable} onClick={()=>batch(true)}><Printer/> طباعة الدفعة</Button>
+        <Button variant="outline" disabled={unavailable||!plan.printable} onClick={()=>batch(false)}><Download/> تنزيل نسخة الطباعة</Button>
+        <Button variant="outline" disabled={unavailable||!plan.pages.length} onClick={()=>onPage(plan.pages[0]?.page??null)}><FileText/> معاينة الصفحات</Button>
+        {plan.canExportOriginal&&<Button variant="ghost" size="sm" disabled={disabled||busy||!file.hash} onClick={()=>setOriginal(true)}>تنزيل الأصل للإدارة</Button>}
+      </div>
+    </section>
     <Dialog open={!!page} onOpenChange={open=>{if(!open&&!busy)onPage(null);}}>
       <DialogContent dir="rtl" className="print-page-dialog">
         <DialogHeader>

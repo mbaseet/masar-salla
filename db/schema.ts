@@ -2,7 +2,7 @@ import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqli
 
 export const users = sqliteTable('users', { id: text('id').primaryKey(), email: text('email').notNull().unique(), name: text('name').notNull(), role: text('role').notNull().default('operator'), active: integer('active').notNull().default(1), createdAt: text('created_at').notNull() });
 export const brands = sqliteTable('brands', { id: text('id').primaryKey(), name: text('name').notNull(), color: text('color').notNull(), identifiers: text('identifiers').notNull(), columns: text('columns').notNull(), retentionDays: integer('retention_days').notNull().default(30), archiveDays: integer('archive_days').notNull().default(7), indexDays: integer('index_days').notNull().default(0), createdAt: text('created_at').notNull() });
-export const files = sqliteTable('files', { id: text('id').primaryKey(), brandId: text('brand_id').notNull().references(() => brands.id), name: text('name').notNull(), size: integer('size').notNull(), hash: text('hash'), objectKey: text('object_key').notNull(), status: text('status').notNull().default('uploading'), stage: text('stage').notNull().default('awaiting'), bucket: text('bucket').notNull().default('unknown'), detectedBrandId: text('detected_brand_id'), pageCount: integer('page_count').notNull().default(0), waybillCount: integer('waybill_count').notNull().default(0), carriers: text('carriers').notNull().default('[]'), uploadedAt: text('uploaded_at').notNull(), expiresAt: text('expires_at').notNull(), printedAt: text('printed_at'), shippedAt: text('shipped_at'), changedVersion: integer('changed_version').notNull().default(0), ackVersion: integer('ack_version').notNull().default(0), reviewedAt: text('reviewed_at'), createdBy: text('created_by').notNull(), processedAt: text('processed_at') }, t => [index('idx_files_brand_expiry').on(t.brandId,t.expiresAt), index('idx_files_brand_hash').on(t.brandId,t.hash)]);
+export const files = sqliteTable('files', { id: text('id').primaryKey(), brandId: text('brand_id').notNull().references(() => brands.id), name: text('name').notNull(), size: integer('size').notNull(), hash: text('hash'), objectKey: text('object_key').notNull(), status: text('status').notNull().default('uploading'), stage: text('stage').notNull().default('awaiting'), bucket: text('bucket').notNull().default('unknown'), detectedBrandId: text('detected_brand_id'), pageCount: integer('page_count').notNull().default(0), waybillCount: integer('waybill_count').notNull().default(0), carriers: text('carriers').notNull().default('[]'), uploadedAt: text('uploaded_at').notNull(), expiresAt: text('expires_at').notNull(), printedAt: text('printed_at'), shippedAt: text('shipped_at'), changedVersion: integer('changed_version').notNull().default(0), ackVersion: integer('ack_version').notNull().default(0), reviewedAt: text('reviewed_at'), createdBy: text('created_by').notNull(), processedAt: text('processed_at'), labelText: text('label_text'), labelColor: text('label_color') }, t => [index('idx_files_brand_expiry').on(t.brandId,t.expiresAt), index('idx_files_brand_hash').on(t.brandId,t.hash)]);
 export const pages = sqliteTable('pages', { id: text('id').primaryKey(), fileId: text('file_id').notNull().references(() => files.id, {onDelete:'cascade'}), page: integer('page').notNull(), data: text('data').notNull() }, t => [uniqueIndex('idx_pages_file_page').on(t.fileId,t.page)]);
 export const occurrences = sqliteTable('occurrences', { id: text('id').primaryKey(), fileId: text('file_id').notNull().references(() => files.id, {onDelete:'cascade'}), brandId: text('brand_id').notNull(), page: integer('page').notNull(), ref: text('ref').notNull(), tracking: text('tracking'), quantity: integer('quantity'), carrier: text('carrier').notNull(), sourceDate: text('source_date'), dateType: text('date_type'), pageRole: text('page_role').notNull() }, t => [index('idx_occurrences_brand_ref').on(t.brandId,t.ref),index('idx_occurrences_file').on(t.fileId),index('idx_occurrences_file_page').on(t.fileId,t.page)]);
 export const findings = sqliteTable('findings', { id: text('id').primaryKey(), fingerprint: text('fingerprint').notNull().unique(), fileId: text('file_id').notNull().references(() => files.id,{onDelete:'cascade'}), kind: text('kind').notNull(), ref: text('ref'), page: integer('page'), relatedFileId: text('related_file_id'), relatedPage: integer('related_page'), message: text('message').notNull(), status: text('status').notNull().default('open'), resolutionNote: text('resolution_note'), resolvedBy: text('resolved_by'), resolvedAt: text('resolved_at'), createdAt: text('created_at').notNull() }, t => [index('idx_findings_file_status').on(t.fileId,t.status)]);
@@ -42,3 +42,63 @@ export const batchPrintRefs = sqliteTable('batch_print_refs', {
   expiresAt: text('expires_at').notNull(),
   version: text('version').notNull(),
 }, t => [uniqueIndex('idx_batch_print_identity').on(t.fileId,t.brandId,t.ref),index('idx_batch_print_ref').on(t.brandId,t.ref),index('idx_batch_print_expiry').on(t.expiresAt)]);
+
+export const scannerSessions = sqliteTable('scanner_sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  credentialVersion: text('credential_version').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
+export const scannerLoginLimits = sqliteTable('scanner_login_limits', {
+  subject: text('subject').primaryKey(),
+  attempts: integer('attempts').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
+export const sallaConnections = sqliteTable('salla_connections', {
+  brandId: text('brand_id').primaryKey(),
+  merchantId: text('merchant_id').notNull().unique(),
+  credentials: text('credentials').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+  eventAt: text('event_at').notNull(),
+  refreshClaim: text('refresh_claim'),
+  indexedAt: integer('indexed_at'),
+  indexComplete: integer('index_complete').notNull().default(0),
+});
+export const sallaShipments = sqliteTable('salla_shipments', {
+  brandId: text('brand_id').notNull().references(() => sallaConnections.brandId, {onDelete:'cascade'}),
+  shipmentId: text('shipment_id').notNull(),
+  orderId: text('order_id').notNull(),
+  tracking: text('tracking').notNull(),
+}, t => [
+  uniqueIndex('idx_salla_shipment_key').on(t.brandId,t.shipmentId,t.tracking),
+  index('idx_salla_tracking').on(t.brandId,t.tracking),
+]);
+export const sallaShipmentEvents = sqliteTable('salla_shipment_events', {
+  brandId: text('brand_id').notNull().references(() => sallaConnections.brandId, {onDelete:'cascade'}),
+  shipmentId: text('shipment_id').notNull(),
+  orderId: text('order_id'),
+  tracking: text('tracking'),
+  shippingNumber: text('shipping_number'),
+  eventAt: text('event_at').notNull(),
+  eventRank: integer('event_rank').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+}, t => [
+  uniqueIndex('idx_salla_shipment_event_key').on(t.brandId,t.shipmentId),
+  index('idx_salla_event_tracking').on(t.brandId,t.tracking),
+  index('idx_salla_event_shipping_number').on(t.brandId,t.shippingNumber),
+  index('idx_salla_event_expiry').on(t.expiresAt),
+]);
+export const sallaOrderProducts = sqliteTable('salla_order_products', {
+  brandId: text('brand_id').notNull().references(() => sallaConnections.brandId, {onDelete:'cascade'}),
+  ref: text('ref').notNull(),
+  products: text('products').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+}, t => [uniqueIndex('idx_salla_order_products_ref').on(t.brandId,t.ref)]);
+export const brandOrderCategories = sqliteTable('brand_order_categories', {
+  brandId: text('brand_id').primaryKey().references(() => brands.id, {onDelete:'cascade'}),
+  configuration: text('configuration').notNull(),
+});
+export const fileOrderCategories = sqliteTable('file_order_categories', {
+  fileId: text('file_id').primaryKey().references(() => files.id, {onDelete:'cascade'}),
+  brandId: text('brand_id').notNull(),
+  ruleId: text('rule_id').notNull(),
+});

@@ -1,12 +1,15 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { env } from 'cloudflare:workers';
 import { z } from 'zod';
-import { analyzePages, detectPage, DEFAULT_COLUMNS, MAX_FILE_BYTES, normalize, normalizeRef, parseRefList, type Brand, type PageRecord, type User, type FindingInput } from '@/lib/domain';
+import { analyzePages, detectPage, DEFAULT_COLUMNS, MAX_FILE_BYTES, FILE_LABEL_COLORS, moveNeedsConfirmation, normalize, normalizeRef, parseRefList, type Brand, type PageRecord, type User, type FindingInput, type FileLabelColor } from '@/lib/domain';
 import { currentUser,requireAdmin,checkOrigin,db,bucket,sql,rows,one,now,uid,addDays,getBrands,getFile,CARD_SELECT,hydrateFile,auditStatement,maintenance,upgradeFileChecks,HttpError } from '@/lib/server';
 
 import { bulkShipmentMatches, changePageExclusion, confirmBatch, getPrintPlan, issueBatch, issueEarlyLabel, previewPage, shipmentAction, shipOrdersTogether } from '@/lib/printing';
 import { MAX_BATCH_REFS } from '@/lib/printing-types';
 import { originalPdf, pdfResponse, readPrivatePdf } from '@/lib/private-pdf';
+
+import { orderCategoriesSchema } from '@/lib/order-categories';
+import { addOrderCategories, setFileCategory } from '@/lib/order-category-server';
 
 export const dynamic='force-dynamic';
 const pageSchema=z.object({page:z.number().int().min(1).max(10000),refs:z.array(z.string().regex(/^\d{1,40}$/)).max(20),tracking:z.string().max(100).nullable(),quantity:z.number().int().min(1).max(100000).nullable(),carrier:z.enum(['Aymakan','RedBox','DHL','Unknown']),sourceDate:z.string().max(100).nullable(),dateType:z.enum(['order','carrier','label']).nullable(),role:z.enum(['label','support','unknown']),brands:z.array(z.string().max(100)).max(20),matches:z.array(z.string().max(150)).max(50)});
@@ -37,17 +40,34 @@ async function processFile(id:string,pages:PageRecord[],user:User,expectedBucket
       statements.push(sql("INSERT OR IGNORE INTO findings (id,fingerprint,file_id,kind,ref,page,related_file_id,related_page,message,status,created_at) SELECT json_extract(value,'$.fingerprint'),json_extract(value,'$.fingerprint'),?,json_extract(value,'$.kind'),json_extract(value,'$.ref'),json_extract(value,'$.page'),json_extract(value,'$.relatedFileId'),json_extract(value,'$.relatedPage'),json_extract(value,'$.message'),'open',? FROM json_each(?)",id,now(),JSON.stringify(entries)));
     }
     const timestamp=now();
-    // SQLite serializes this batch: a concurrently completed upload is visible to the next one.
+    // Match identical PDFs and regenerated PDFs that represent the same complete set of pages.
+    // Only compare extracted identities when every page has one known Ref and tracking number.
+    const complete = pages.every(page=>page.refs.length===1 && page.tracking && page.role!=='unknown');
+    const signature = (fileId: string) => `SELECT json_group_array(json_array(ref,tracking,page_role,carrier,quantity)) FROM (
+      SELECT ref,tracking,page_role,carrier,quantity FROM occurrences WHERE file_id=${fileId}
+      ORDER BY ref,tracking,page_role,carrier,quantity
+    )`;
+    statements.push(sql(`INSERT OR IGNORE INTO findings (id,fingerprint,file_id,kind,ref,page,related_file_id,related_page,message,status,created_at)
+      SELECT f.id || '|hash|' || other.id,f.id || '|hash|' || other.id,f.id,'duplicate_file',NULL,NULL,
+        other.id,NULL,'رُفع نفس الملف أو نفس مجموعة البوالص من قبل.','open',?
+      FROM files f JOIN files other ON other.brand_id=f.brand_id AND other.id<>f.id
+      WHERE f.id=? AND other.expires_at>? AND other.status='ready' AND (
+        other.hash=f.hash OR (?=1 AND other.page_count=?
+          AND EXISTS(SELECT 1 FROM occurrences a JOIN occurrences b ON b.brand_id=a.brand_id AND b.ref=a.ref
+            WHERE a.file_id=f.id AND b.file_id=other.id AND b.tracking=a.tracking AND a.page_role='label')
+          AND (${signature('f.id')})=(${signature('other.id')}))
+      )`,timestamp,id,timestamp,Number(complete),pages.length));
+    // The batch serializes concurrent uploads and mirrors findings for both files.
     statements.push(sql(`INSERT OR IGNORE INTO findings (id,fingerprint,file_id,kind,ref,page,related_file_id,related_page,message,status,created_at)
       SELECT a.id || '|cross|' || b.id,a.id || '|cross|' || b.id,a.file_id,'duplicate_order',a.ref,a.page,b.file_id,b.page,'الطلب موجود في ملف آخر لنفس العلامة.','open',?
       FROM occurrences a JOIN occurrences b ON b.brand_id=a.brand_id AND b.ref=a.ref AND b.file_id<>a.file_id JOIN files other ON other.id=b.file_id
-      WHERE a.file_id=? AND a.page_role<>'support' AND b.page_role<>'support' AND other.expires_at>? AND other.status='ready'`,timestamp,id,timestamp));
-    statements.push(sql(`INSERT OR IGNORE INTO findings (id,fingerprint,file_id,kind,ref,page,related_file_id,related_page,message,status,created_at)
-      SELECT f.id || '|hash|' || other.id,f.id || '|hash|' || other.id,f.id,'duplicate_file',NULL,NULL,other.id,NULL,'تم رفع نفس محتوى PDF من قبل.','open',? FROM files f JOIN files other ON other.brand_id=f.brand_id AND other.hash=f.hash AND other.id<>f.id WHERE f.id=? AND other.expires_at>? AND other.status='ready'`,timestamp,id,timestamp));
+      WHERE a.file_id=? AND a.page_role<>'support' AND b.page_role<>'support' AND other.expires_at>? AND other.status='ready'
+        AND NOT EXISTS(SELECT 1 FROM findings same WHERE same.id=a.file_id || '|hash|' || b.file_id)`,timestamp,id,timestamp));
     statements.push(sql(`INSERT OR IGNORE INTO findings (id,fingerprint,file_id,kind,ref,page,related_file_id,related_page,message,status,created_at)
       SELECT CASE WHEN i.kind='duplicate_file' THEN i.related_file_id || '|hash|' || i.file_id ELSE i.related_file_id || ':' || i.related_page || ':' || i.ref || '|cross|' || i.file_id || ':' || i.page || ':' || i.ref END,
       CASE WHEN i.kind='duplicate_file' THEN i.related_file_id || '|hash|' || i.file_id ELSE i.related_file_id || ':' || i.related_page || ':' || i.ref || '|cross|' || i.file_id || ':' || i.page || ':' || i.ref END,
-      i.related_file_id,i.kind,i.ref,i.related_page,i.file_id,i.page,'يوجد ملف آخر يكرر هذا الطلب أو الملف.','open',? FROM findings i WHERE i.file_id=? AND i.related_file_id IS NOT NULL AND i.kind IN ('duplicate_order','duplicate_file')`,timestamp,id));
+      i.related_file_id,i.kind,i.ref,i.related_page,i.file_id,i.page,
+      CASE WHEN i.kind='duplicate_file' THEN 'رُفع نفس الملف أو نفس مجموعة البوالص من قبل.' ELSE 'الطلب موجود في ملف آخر لنفس العلامة.' END,'open',? FROM findings i WHERE i.file_id=? AND i.related_file_id IS NOT NULL AND i.kind IN ('duplicate_order','duplicate_file')`,timestamp,id));
     statements.push(sql("UPDATE files SET status='ready',bucket=?,detected_brand_id=?,page_count=?,waybill_count=?,carriers=?,processed_at=?,reviewed_at=NULL WHERE id=?",result.bucket,result.detectedBrandId,result.pageCount,result.waybillCount,JSON.stringify(result.carriers),timestamp,id));
     statements.push(auditStatement(user,'processed',{pages:result.pageCount,waybills:result.waybillCount,bucket:result.bucket},file.brand_id,id));
     statements.push(sql("INSERT OR REPLACE INTO settings (key,value) VALUES (?, '1')",`checks_v2:${id}`));
@@ -71,7 +91,7 @@ async function handle(request:Request) {
       return json({user,brands:await getBrands()});
     }
     if(path[0]==='brands' && method==='POST') {
-      requireAdmin(user);const input=brandSchema.parse(await body(request));
+      requireAdmin(user);const input=brandSchema.extend({orderCategories:orderCategoriesSchema.optional()}).parse(await body(request));
       if(new Set(input.columns.map(c=>c.id)).size!==input.columns.length || DEFAULT_COLUMNS.some(c=>!input.columns.some(x=>x.id===c.id))) throw new HttpError(400,'احتفظ بالمراحل الأساسية مع إمكانية تغيير أسمائها وترتيبها.');
       const identifierKeys=input.identifiers.map(normalize);
       if(new Set(identifierKeys).size!==identifierKeys.length) throw new HttpError(400,'توجد كلمات تعريف مكررة.');
@@ -83,7 +103,10 @@ async function handle(request:Request) {
         const removed=old.columns.filter(c=>!input.columns.some(n=>n.id===c.id));
         for(const c of removed) if(await one('SELECT id FROM files WHERE brand_id=? AND stage=? AND expires_at>? LIMIT 1',id,c.id,now())) throw new HttpError(409,'انقل الملفات من العمود قبل حذفه.');
       }
-      await db().batch([sql('INSERT INTO brands (id,name,color,identifiers,columns,retention_days,archive_days,index_days,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,color=excluded.color,identifiers=excluded.identifiers,columns=excluded.columns,retention_days=excluded.retention_days,archive_days=excluded.archive_days,index_days=excluded.index_days',id,input.name,input.color,JSON.stringify(input.identifiers),JSON.stringify(input.columns),input.retention_days,input.archive_days,input.index_days,now()),auditStatement(user,old?'brand_updated':'brand_created',{name:input.name,identifiers:input.identifiers},id)]);
+      await db().batch([sql('INSERT INTO brands (id,name,color,identifiers,columns,retention_days,archive_days,index_days,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,color=excluded.color,identifiers=excluded.identifiers,columns=excluded.columns,retention_days=excluded.retention_days,archive_days=excluded.archive_days,index_days=excluded.index_days',id,input.name,input.color,JSON.stringify(input.identifiers),JSON.stringify(input.columns),input.retention_days,input.archive_days,input.index_days,now()),
+      ...(input.orderCategories ? [sql(`INSERT INTO brand_order_categories(brand_id,configuration) VALUES (?,?)
+        ON CONFLICT(brand_id) DO UPDATE SET configuration=excluded.configuration`,id,JSON.stringify(input.orderCategories))] : []),
+      auditStatement(user,old?'brand_updated':'brand_created',{name:input.name,identifiers:input.identifiers},id)]);
       // A shorter policy also applies to existing records; never extend an expired object's life.
       await sql("UPDATE files SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',uploaded_at,? || ' days') WHERE brand_id=? AND expires_at>?",String(input.retention_days),id,now()).run();
       if(input.index_days===0) await sql('DELETE FROM order_index WHERE brand_id=?',id).run();
@@ -106,7 +129,7 @@ async function handle(request:Request) {
         await upgradeFileChecks();
         const brand=url.searchParams.get('brand');
         const files=await rows(`${CARD_SELECT} WHERE f.expires_at>? ${brand?'AND f.brand_id=?':''} ORDER BY f.uploaded_at DESC LIMIT 2000`,now(),...(brand?[brand]:[]));
-        return json({files:files.map(f=>hydrateFile(f as Parameters<typeof hydrateFile>[0]))});
+        return json({files:await addOrderCategories(files.map(f=>hydrateFile(f as Parameters<typeof hydrateFile>[0])),await getBrands())});
       }
       if(method==='POST') {
         const input=z.object({id:z.string().uuid(),brandId:z.string().max(100),name:z.string().trim().min(1).max(240),size:z.number().int().positive().max(MAX_FILE_BYTES)}).parse(await body(request));
@@ -121,6 +144,25 @@ async function handle(request:Request) {
     }
     if(path[0]==='files' && path[1]) {
       const id=path[1],action=path[2];const file=await getFile(id);
+        if(action==='label' && method==='POST') {
+        const colors = Object.keys(FILE_LABEL_COLORS) as [FileLabelColor, ...FileLabelColor[]];
+        const {label} = z.object({label:z.object({
+          text:z.string().trim().min(1).max(40),color:z.enum(colors),
+        }).nullable()}).parse(await body(request));
+        const [updated] = await db().batch([
+          sql("UPDATE files SET label_text=?,label_color=? WHERE id=? AND expires_at>? AND status<>'deleting'",
+            label?.text??null,label?.color??null,id,now()),
+          auditStatement(user,'file_label_changed',{label},file.brand_id,id,true),
+        ]);
+        if (!updated.meta.changes) throw new HttpError(409,'الملف لم يعد متاحًا للتعديل.');
+        return json({ok:true});
+      }
+      if(action==='category' && method==='POST') {
+        const {ruleId}=z.object({ruleId:z.string().regex(/^[a-z0-9_-]{1,48}$/).nullable()}).parse(await body(request));
+        if(file.status!=='ready')throw new HttpError(409,'أكمل فحص الملف أولًا.');
+        await setFileCategory(file,user,ruleId);
+        return json({ok:true});
+      }
       if(!action && method==='DELETE') {
         const input=z.object({confirm:z.literal(true)}).parse(await body(request));
         const claimed=await one("UPDATE files SET status='deleting',expires_at=? WHERE id=? AND (status NOT IN ('receiving','processing','deleting') OR (status IN ('receiving','processing') AND processed_at<?)) RETURNING id",now(),id,new Date(Date.now()-600000).toISOString());
@@ -137,7 +179,7 @@ async function handle(request:Request) {
         }catch(error){await sql("UPDATE files SET status=?,expires_at=? WHERE id=? AND status='deleting'",file.status,file.expires_at,id).run();throw error;}
         return json({ok:true});
       }
-      if(!action && method==='GET') return json({file,printPlan:await getPrintPlan(file,user),findings:await rows('SELECT i.*, f.name AS related_name, f.uploaded_at AS related_uploaded_at FROM findings i LEFT JOIN files f ON f.id=i.related_file_id AND f.expires_at>? WHERE i.file_id=? AND (i.related_file_id IS NULL OR f.id IS NOT NULL) ORDER BY (i.status=\'open\') DESC,i.page',now(),id),notes:await rows('SELECT * FROM notes n WHERE n.brand_id=? AND (n.file_id=? OR (n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=? AND o.ref=n.ref))) ORDER BY n.created_at DESC',file.brand_id,id,id),orders:await rows('SELECT * FROM occurrences WHERE file_id=? ORDER BY page,ref',id),audit:await rows('SELECT * FROM audit WHERE file_id=? ORDER BY created_at DESC LIMIT 100',id)});
+      if(!action && method==='GET') return json({file:(await addOrderCategories([file],await getBrands()))[0],printPlan:await getPrintPlan(file,user),findings:await rows('SELECT i.*, f.name AS related_name, f.uploaded_at AS related_uploaded_at FROM findings i LEFT JOIN files f ON f.id=i.related_file_id AND f.expires_at>? WHERE i.file_id=? AND (i.related_file_id IS NULL OR f.id IS NOT NULL) ORDER BY (i.status=\'open\') DESC,i.page',now(),id),notes:await rows('SELECT * FROM notes n WHERE n.brand_id=? AND (n.file_id=? OR (n.ref IS NOT NULL AND EXISTS(SELECT 1 FROM occurrences o WHERE o.file_id=? AND o.ref=n.ref))) ORDER BY n.created_at DESC',file.brand_id,id,id),orders:await rows('SELECT * FROM occurrences WHERE file_id=? ORDER BY page,ref',id),audit:await rows('SELECT * FROM audit WHERE file_id=? ORDER BY created_at DESC LIMIT 100',id)});
       if(action==='content' && method==='PUT') {
         if(!request.body) throw new HttpError(400,'الملف فارغ.');
         const claimed=await one("UPDATE files SET status='receiving',processed_at=? WHERE id=? AND (status='uploading' OR (status='receiving' AND processed_at<?)) RETURNING id",now(),id,new Date(Date.now()-600000).toISOString()); if(!claimed) throw new HttpError(409,'تم رفع الملف بالفعل أو يجري رفعه.');
@@ -199,12 +241,23 @@ async function handle(request:Request) {
         return await issueEarlyLabel(file,user,input.page);
       }
       if(action==='move' && method==='POST') {
-        const input=z.object({stage:z.string().max(50)}).parse(await body(request));const brand=(await getBrands()).find(b=>b.id===file.brand_id)!;
-        if(!brand.columns.some(c=>c.id===input.stage))throw new HttpError(400,'العمود غير موجود.');
-        if(input.stage==='printed')throw new HttpError(400,'استخدم تأكيد الطباعة لتسجيل من طبع الملف ووقته.');
-        if(file.status!=='ready')throw new HttpError(409,'أكمل فحص الملف أولًا.');
-        if(['prepared','shipped'].includes(input.stage)&&!file.printed_at)throw new HttpError(409,'أكد طباعة الملف أولًا.');
-        await db().batch([sql('UPDATE files SET stage=?,shipped_at=? WHERE id=?',input.stage,input.stage==='shipped'?(file.stage==='shipped'?file.shipped_at:now()):null,id),auditStatement(user,'moved',{from:file.stage,to:input.stage},file.brand_id,id)]);return json({ok:true});
+        const input = z.object({
+          stage:z.string().max(50), fromStage:z.string().max(50).optional(), confirmed:z.boolean().optional(),
+        }).parse(await body(request));
+        const brand = (await getBrands()).find(b=>b.id===file.brand_id)!;
+        if (!brand.columns.some(c=>c.id===input.stage)) throw new HttpError(400,'العمود غير موجود.');
+        if (input.fromStage!==undefined && input.fromStage!==file.stage) throw new HttpError(409,'تغيّرت مرحلة الملف. حدّث اللوحة وأعد المحاولة.');
+        if (file.status!=='ready') throw new HttpError(409,'أكمل فحص الملف أولًا.');
+        if (input.stage===file.stage) return json({ok:true});
+        if (moveNeedsConfirmation(file,input.stage) && !input.confirmed) throw new HttpError(409,'أكد نقل الملف إلى المرحلة المختارة.');
+        const time = now();
+        const [moved] = await db().batch([
+          sql("UPDATE files SET stage=?,shipped_at=? WHERE id=? AND brand_id=? AND stage=? AND status='ready' AND expires_at>?",
+            input.stage,input.stage==='shipped'?time:null,id,file.brand_id,file.stage,time),
+          auditStatement(user,'moved',{from:file.stage,to:input.stage},file.brand_id,id,true),
+        ]);
+        if (!moved.meta.changes) throw new HttpError(409,'تغيّر الملف أثناء النقل. حدّث اللوحة وأعد المحاولة.');
+        return json({ok:true});
       }
       if(action==='printed' && method==='POST') {
         const {batchId}=z.object({batchId:z.string().uuid()}).parse(await body(request));
@@ -247,10 +300,10 @@ async function handle(request:Request) {
       }
     }
     if(path[0]==='findings' && method==='POST') {
-      const input=z.object({ids:z.array(z.string().max(500)).min(1).max(1000),status:z.enum(['confirmed_error','false_alarm','voided']),note:z.string().trim().min(1).max(2000)}).parse(await body(request));
+      const input=z.object({ids:z.array(z.string().max(500)).min(1).max(1000),status:z.enum(['confirmed_error','false_alarm','voided']),note:z.string().trim().max(2000).optional()}).parse(await body(request));
       const matches=await rows<{id:string;file_id:string;brand_id:string}>("SELECT i.id,i.file_id,f.brand_id FROM findings i JOIN files f ON f.id=i.file_id WHERE i.id IN (SELECT value FROM json_each(?)) AND f.expires_at>? AND i.status='open'",JSON.stringify(input.ids),now());
       if(matches.length===0)throw new HttpError(409,'تمت معالجة هذه التنبيهات بالفعل.');
-      await db().batch([sql("UPDATE findings SET status=?,resolution_note=?,resolved_by=?,resolved_at=? WHERE id IN (SELECT value FROM json_each(?)) AND status='open'",input.status,input.note,user.id,now(),JSON.stringify(matches.map(m=>m.id))),...([...new Set(matches.map(m=>m.file_id))].map(fileId=>auditStatement(user,'issues_resolved',{count:matches.filter(m=>m.file_id===fileId).length,status:input.status,note:input.note},matches.find(m=>m.file_id===fileId)!.brand_id,fileId)))]);return json({ok:true});
+      await db().batch([sql("UPDATE findings SET status=?,resolution_note=?,resolved_by=?,resolved_at=? WHERE id IN (SELECT value FROM json_each(?)) AND status='open'",input.status,input.note||null,user.id,now(),JSON.stringify(matches.map(m=>m.id))),...([...new Set(matches.map(m=>m.file_id))].map(fileId=>auditStatement(user,'issues_resolved',{count:matches.filter(m=>m.file_id===fileId).length,status:input.status,note:input.note||null},matches.find(m=>m.file_id===fileId)!.brand_id,fileId)))]);return json({ok:true});
     }
     if(path.join('/')==='search/ship' && method==='POST') {
       const input=z.object({

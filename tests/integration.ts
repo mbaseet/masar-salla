@@ -45,7 +45,7 @@ async function upload(pages:PageRecord[],bytes=Buffer.from(`%PDF-1.7\n% syntheti
 }
 for(const count of [226,26,836,85,6]){
  const {name,pages}=await load(count),bytes=await readFile(`../sample waybills/${name}`);const result=await upload(pages,bytes,'wassan',name);samples.set(count,{id:result.id,pages,bytes});
- assert.equal(result.file.page_count,count);assert.equal(result.file.waybill_count,count===6?3:count);assert.equal(result.file.open_issues,count===6?3:0);
+ assert.equal(result.file.page_count,count);assert.equal(result.file.waybill_count,count===6?3:count);assert.equal(result.file.open_issues,0);
  const downloaded=await fetch(`${origin}/api/files/${result.id}/original`,{method:'POST',headers:{cookie}});assert.equal(downloaded.status,200);assert.equal(createHash('sha256').update(Buffer.from(await downloaded.arrayBuffer())).digest('hex'),createHash('sha256').update(bytes).digest('hex'));
  pass(`${count}-page original upload, correct findings/counts, unchanged download; processing ${result.seconds.toFixed(2)}s`);
 }
@@ -57,8 +57,8 @@ await call(`files/${first.id}/acknowledge`,{version:1});await call(`files/${firs
 detail=await call(`files/${first.id}`);assert.equal(detail.file.changed_version,2);assert.equal(detail.file.ack_version,1);pass('late cancellation on Prepared, acknowledgment, second change and stale acknowledgment rejection');
 let search=await call(`search?q=${ref.slice(0,-1)}`);assert.ok(search.results.some((r:any)=>r.ref===ref&&r.file_id===first.id));
 search=await call('search',{refs:`${ref}\n000000000000`});assert.deepEqual(search.missing,['000000000000']);pass('partial and batch search');
-const duplicate=await upload(first.pages,first.bytes);detail=await call(`files/${duplicate.id}`);assert.equal(detail.findings.filter((f:any)=>f.kind==='duplicate_order').length,226);assert.equal(detail.findings.filter((f:any)=>f.kind==='duplicate_file').length,1);
-await call(`files/${duplicate.id}/recheck`,{});let original=await call(`files/${first.id}`);assert.equal(original.findings.length,227);pass('same-file hash plus cross-file refs; recheck does not multiply mirrored findings');
+const duplicate=await upload(first.pages,first.bytes);detail=await call(`files/${duplicate.id}`);assert.equal(detail.findings.filter((f:any)=>f.kind==='duplicate_order').length,0);assert.equal(detail.findings.filter((f:any)=>f.kind==='duplicate_file').length,1);
+await call(`files/${duplicate.id}/recheck`,{});let original=await call(`files/${first.id}`);assert.equal(original.findings.length,1);pass('identical files generate one mirrored file warning after recheck');
 await call('findings',{ids:detail.findings.map((f:any)=>f.id),status:'voided',note:'QA duplicate copy voided'});await call(`files/${duplicate.id}/recheck`,{});detail=await call(`files/${duplicate.id}`);assert.equal(detail.file.open_issues,0);pass('resolved findings remain resolved after recheck');
 const repeat=await upload(first.pages.slice(0,2));detail=await call(`files/${repeat.id}`);assert.equal(detail.findings.filter((f:any)=>f.kind==='duplicate_order'&&f.related_file_id===first.id).length,2);assert.ok(detail.findings.every((f:any)=>f.related_page&&f.related_uploaded_at));pass('two repeated orders show previous file, page and date');
 const baseline={...first.pages[0],refs:['800000001']};
@@ -70,7 +70,7 @@ await call(`brands/${other.id}`,{...other,identifiers:['Other Store','other.exam
 await call('brands',{...other,name:'Conflicting',identifiers:['wasnbrand.com']},400);
 const wrong=await upload([{...baseline,brands:[other.id],matches:['Other Store']}]);detail=await call(`files/${wrong.id}`);assert.equal(detail.file.detected_brand_id,other.id);assert.ok(detail.findings.some((f:any)=>f.kind==='brand_mismatch'));
 await call(`files/${wrong.id}/brand`,{brandId:other.id});detail=await call(`files/${wrong.id}`);assert.equal(detail.file.brand_id,other.id);assert.equal(detail.file.open_issues,0);pass('editable brand words, conflicting words rejected, wrong-brand move rechecks destination without cross-brand false duplicates');
-const concurrentPage={...baseline,refs:['800000099']};const concurrent=await Promise.all([upload([concurrentPage]),upload([concurrentPage])]);for(const f of concurrent){detail=await call(`files/${f.id}`);assert.ok(detail.findings.some((i:any)=>i.kind==='duplicate_order'));}pass('simultaneous uploads detect both sides');
+const concurrentPage={...baseline,refs:['800000099']};const concurrent=await Promise.all([upload([concurrentPage]),upload([concurrentPage])]);for(const f of concurrent){detail=await call(`files/${f.id}`);assert.equal(detail.findings.filter((i:any)=>i.kind==='duplicate_file').length,1);}pass('simultaneous identical uploads detect both sides');
 database.prepare('UPDATE files SET expires_at=? WHERE id=?').run(new Date(Date.now()-1000).toISOString(),concurrent[0].id);detail=await call(`files/${concurrent[1].id}`);assert.equal(detail.file.open_issues,0);assert.equal(detail.findings.length,0);pass('expired related duplicates stop alerting before cleanup runs');
 const clean=samples.get(26)!;await confirmPrint(clean.id);await call(`files/${clean.id}/move`,{stage:'shipped'});
 database.prepare("UPDATE files SET shipped_at=? WHERE id=?").run(new Date(Date.now()-8*86400000).toISOString(),clean.id);
